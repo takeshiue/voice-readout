@@ -9,18 +9,18 @@ set -u
 
 source "$(dirname "$0")/tts-lib.sh"
 
-LOCK_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-watcher.pid"
+LOCK_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-watcher.lock"
 
-# Single instance: a live PID in the lock file means a watcher is already on it.
-if [ -f "$LOCK_FILE" ]; then
-  oldpid="$(cat "$LOCK_FILE" 2>/dev/null)"
-  case "$oldpid" in
-    ""|*[!0-9]*) ;;
-    *) kill -0 "$oldpid" 2>/dev/null && exit 0 ;;
-  esac
-fi
-printf '%s' "$$" > "$LOCK_FILE"
-trap 'rm -f "$LOCK_FILE"' EXIT
+# Single instance, race-free: two speak() failures in quick succession each
+# call start_recovery_watcher(), and a check-then-write PID file (the old
+# approach here) has a gap between reading "no watcher yet" and writing your
+# own PID — both can slip through and read "not locked" before either writes,
+# leaving two watchers alive at once (observed 2026-07-20: two concurrent
+# recovery-watcher.sh processes, each probing and eventually both trying to
+# announce recovery). flock's lock+check happens as one atomic kernel op, so
+# only one instance can ever hold it.
+exec 9>"$LOCK_FILE"
+flock -n 9 || exit 0
 
 INTERVAL="${VOICE_READOUT_WATCH_INTERVAL:-60}"
 MAX_TRIES="${VOICE_READOUT_WATCH_TRIES:-30}"
@@ -30,6 +30,15 @@ log watcher "started (interval ${INTERVAL}s, max ${MAX_TRIES} tries)"
 tries=0
 while [ "$tries" -lt "$MAX_TRIES" ]; do
   sleep "$INTERVAL"
+
+  # A legitimate long readout can easily still be speaking 60s later — don't
+  # probe over it (see ondevice_call_in_progress's comment for why binding
+  # the engine here could interrupt it), and don't count the skip as a try.
+  if ondevice_call_in_progress; then
+    log watcher "skipping probe: ondevice readout in progress"
+    continue
+  fi
+
   tries=$(( tries + 1 ))
   precleanup_stuck_tts
   if timeout 15 termux-tts-engines >/dev/null 2>&1; then

@@ -99,7 +99,8 @@ voice-readout/
 │   ├── summarize-and-speak.sh  Stop フック本体（要約 or フル読み上げ）
 │   ├── notify-speak.sh         Notification フック本体（許可確認・入力待ち）
 │   ├── recovery-watcher.sh     故障後、復旧を自動検知するウォッチャー
-│   └── toggle.sh                オン/オフ・モード・ペルソナ切替の設定変更コマンド
+│   ├── toggle.sh                オン/オフ・モード・ペルソナ切替の設定変更コマンド
+│   └── speak-text.sh            任意のファイル/標準入力の文章をそのまま読み上げる手動コマンド（フックではない。Stop フックの要約・整形処理を一切通さない）
 ├── personas/
 │   └── persona.md               口調プリセット（甘い口調）。中身を書き換えれば別の口調にもできる
 └── README.md                   このファイル

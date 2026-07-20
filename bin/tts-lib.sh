@@ -2,7 +2,17 @@
 # Callers must be registered with "async": true and must always exit 0.
 
 LOG_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout.log"
+# This file is appended to indefinitely across sessions with nothing else
+# trimming it, so self-rotate once it grows past a threshold instead of
+# growing forever.
+LOG_MAX_BYTES="${VOICE_READOUT_LOG_MAX_BYTES:-1048576}"
 log() {
+  local size
+  size="$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)"
+  case "$size" in *[!0-9]*|"") size=0 ;; esac
+  if [ "$size" -gt "$LOG_MAX_BYTES" ]; then
+    tail -n 500 "$LOG_FILE" > "${LOG_FILE}.tmp" 2>/dev/null && mv "${LOG_FILE}.tmp" "$LOG_FILE" 2>/dev/null
+  fi
   printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" >> "$LOG_FILE" 2>/dev/null
 }
 
@@ -135,33 +145,26 @@ notify_failure() {
   fi
   printf '%s' "$now" > "$stamp_file" 2>/dev/null
 
-  # Two separate notifications, one per app: tapping a button closes the
-  # notification shade, so a single 2-button notification loses its second
-  # step the moment the first is used. Step ① is Termux:API: the wedge lives
-  # in its held TTS binding, and restarting it also re-binds to the Google
-  # engine — force-stopping only Google fixed nothing (2026-07-20).
-  # Posting order is ② then ①: Android shows the newest notification on top,
-  # so the step to do first must be sent last.
+  # One notification, two buttons — not two separate notifications. Two
+  # separate notifications (an earlier design) actively conflicted on-device:
+  # tapping either one's action dismissed the other before it could be used
+  # too. Merging them into one fixed that, but exposed a second issue: Android
+  # auto-cancels a notification once one of its buttons is pressed, so trying
+  # button1 first still took the whole notification (and button2) away before
+  # button2 could be tried (seen 2026-07-20). --ongoing marks it persistent,
+  # which keeps it (and both buttons) around across a button press — cleared
+  # only by clear_failure_notifications() once a readout actually succeeds.
   termux-notification \
-    --id voice-readout-fix-google \
-    --title "⚠️ 読み上げ停止 ②直らなければ Google音声も" \
-    --content "①で直らないときだけ。タップして「強制停止」を押してください" \
+    --id voice-readout-fix \
+    --title "⚠️ 読み上げ停止 まず①、直らなければ②も" \
+    --content "①Termux:APIを強制停止（これで直ることが多いです）。直らなければ②Google音声も同様に" \
     --priority high \
-    --action "$GOOGLE_TTS_INTENT" \
-    --button1 "設定画面を開く" \
-    --button1-action "$GOOGLE_TTS_INTENT" \
-    2>/dev/null
-  # Posted back-to-back the two can land in the same instant and keep an
-  # arbitrary order — a beat in between makes ① reliably the newest (= top).
-  sleep 1
-  termux-notification \
-    --id voice-readout-fix-termux \
-    --title "⚠️ 読み上げ停止 ①まず Termux:API を強制停止" \
-    --content "タップして開いた画面で「強制停止」を押してください（これだけで直ることが多いです）" \
-    --priority high \
+    --ongoing \
     --action "$TERMUX_API_INTENT" \
-    --button1 "設定画面を開く" \
+    --button1 "①Termux:API" \
     --button1-action "$TERMUX_API_INTENT" \
+    --button2 "②Google音声" \
+    --button2-action "$GOOGLE_TTS_INTENT" \
     2>/dev/null
 }
 
@@ -182,19 +185,142 @@ clear_failure_notifications() {
   [ -f "$stamp_file" ] || return 0
   rm -f "$stamp_file" 2>/dev/null
   if command -v termux-notification-remove >/dev/null 2>&1; then
-    termux-notification-remove voice-readout-fix-google 2>/dev/null
-    termux-notification-remove voice-readout-fix-termux 2>/dev/null
+    termux-notification-remove voice-readout-fix 2>/dev/null
     log info "cleared recovery notifications after successful readout"
   fi
 }
 
-# A stuck TextToSpeech call from a previous invocation never exits, so any
-# process still alive here is already broken (a single one-sentence summary
-# finishes in a few seconds). Clear it before adding a new one to the pile.
+# Tracks the ondevice call currently in flight, as "pid:deadline_epoch",
+# written by speak()'s ondevice branch right before it invokes
+# termux-tts-speak. Lets a later invocation tell a legitimately-still-speaking
+# process from a truly stuck one (see precleanup_stuck_tts below) instead of
+# guessing from process liveness alone.
+ONDEVICE_LOCK_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-ondevice.lock"
+
+# A libexec/termux-api TextToSpeech process still running past its own
+# recorded deadline is stuck (a healthy call always finishes within the
+# timeout speak() wrapped it in) and safe to SIGKILL. But one still inside its
+# deadline is presumably mid-utterance — killing it here used to be exactly
+# how a *new* invocation clobbered a working readout (multiple invocations —
+# the Stop-hook's per-response readout, a manual speak-text.sh test, the
+# recovery watcher's own probe — all called this on every attempt, 2026-07-20
+# session). Worse, SIGKILL lands mid-Binder-transaction with Android's TTS
+# service, which is itself a plausible cause of the "Termux:API holds a wedged
+# connection" state the README describes — i.e. the blind-kill design here
+# risked being the thing that kept re-breaking the engine it was meant to
+# unstick. Returns 0 = caller may proceed (nothing running, or a stale one was
+# just cleared), 1 = a live in-progress call holds the slot; caller must skip.
+# True while a legitimate ondevice call is still inside its recorded
+# deadline. Shared by precleanup_stuck_tts (don't kill it) and
+# recovery-watcher.sh (don't probe over it either — termux-tts-engines binds
+# the engine to check it, and doing that mid-utterance risks stealing the
+# engine binding out from under the call that's actually speaking, which
+# would look identical to "the engine hung" from the outside).
+ondevice_call_in_progress() {
+  local pids deadline
+  pids="$(ps aux 2>/dev/null | awk '$0 ~ /libexec\/termux-api TextToSpeech/ && $0 !~ /awk|grep/ {print $2}')"
+  [ -z "$pids" ] && return 1
+  deadline="$(cut -d: -f2 "$ONDEVICE_LOCK_FILE" 2>/dev/null)"
+  case "$deadline" in ''|*[!0-9]*) deadline=0 ;; esac
+  [ "$(date +%s)" -lt "$deadline" ]
+}
+
 precleanup_stuck_tts() {
   local pids
   pids="$(ps aux 2>/dev/null | awk '$0 ~ /libexec\/termux-api TextToSpeech/ && $0 !~ /awk|grep/ {print $2}')"
-  [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+  [ -z "$pids" ] && return 0
+
+  if ondevice_call_in_progress; then
+    return 1
+  fi
+
+  kill -9 $pids 2>/dev/null
+  rm -f "$ONDEVICE_LOCK_FILE" 2>/dev/null
+  return 0
+}
+
+# Cheap liveness probe reused from recovery-watcher.sh's technique: binds the
+# TTS engine without producing sound, so a wedged engine is detected in
+# seconds instead of only after a full-length termux-tts-speak call times out
+# (which, for a long full-mode readout, could mean minutes before anyone —
+# user or notify_failure — learns something is wrong).
+engine_is_responsive() {
+  timeout "${VOICE_READOUT_PREFLIGHT_TIMEOUT:-10}" termux-tts-engines >/dev/null 2>&1
+}
+
+# Splits text into sentence-bounded chunks (each capped at roughly $max
+# characters, but never cut mid-sentence) so a full-mode readout is many
+# short termux-tts-speak calls instead of one long one. A single ~80s call
+# consistently produced a "Termux:API Error: Error in ResultReturner" toast
+# right around completion — confirmed via screenshot, 2026-07-20 — even
+# though the call itself still reported success; short calls (a one-sentence
+# summary, a "テスト" probe) never showed it. That points to Termux:API's
+# result-return channel not surviving a call that runs this long, which
+# per-call wake-locking (tried first) didn't fix, since the wake lock covers
+# this shell's process, not the separate com.termux.api app. Chunking keeps
+# every individual call short regardless of how long the whole text is.
+# Printed NUL-separated so a chunk's own whitespace/newlines survive the
+# caller's `read -r -d ''` loop.
+split_into_speech_chunks() {
+  local text="$1" max="$2"
+  local flat
+  flat="$(printf '%s' "$text" | tr '\n' ' ')"
+
+  # Pass 1 (awk): cut after every 。！？ into raw sentences. mawk's length()
+  # is byte-, not character-, based, so it can't be trusted to enforce $max
+  # on Japanese text — this pass only splits, it doesn't size-check.
+  local sentences=()
+  local s
+  while IFS= read -r -d '' s; do
+    [ -n "$s" ] && sentences+=("$s")
+  done < <(printf '%s' "$flat" | awk '
+    { buf = buf $0 }
+    END {
+      gsub(/。/, "。\x02", buf); gsub(/！/, "！\x02", buf); gsub(/？/, "？\x02", buf)
+      n = split(buf, a, "\x02")
+      for (i = 1; i <= n; i++) if (a[i] != "") printf "%s%c", a[i], 0
+    }')
+
+  # Pass 2 (bash, character-aware via ${#s}): a sentence with no internal 。
+  # (e.g. one containing a quoted clause) can still be far longer than $max
+  # on its own — that's what let a 195-character chunk through and fail
+  # twice in a row despite the $max=100 target (2026-07-20). Break those
+  # further on 、, and hard-slice anything still too long as a last resort.
+  local pieces=()
+  for s in "${sentences[@]}"; do
+    s="$(printf '%s' "$s" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+    [ -n "$s" ] || continue
+    if [ "${#s}" -le "$max" ]; then
+      pieces+=("$s")
+      continue
+    fi
+    local commaparts=() part idx=0 last
+    IFS='、' read -ra commaparts <<< "$s"
+    last=$(( ${#commaparts[@]} - 1 ))
+    for part in "${commaparts[@]}"; do
+      [ "$idx" -lt "$last" ] && part="${part}、"
+      idx=$(( idx + 1 ))
+      while [ "${#part}" -gt "$max" ]; do
+        pieces+=("${part:0:$max}")
+        part="${part:$max}"
+      done
+      [ -n "$part" ] && pieces+=("$part")
+    done
+  done
+
+  # Pass 3: greedily re-merge consecutive short pieces back up toward $max,
+  # so unrelated clauses that are individually tiny don't each get their own
+  # termux-tts-speak call.
+  local chunk="" p
+  for p in "${pieces[@]}"; do
+    if [ -n "$chunk" ] && [ $(( ${#chunk} + ${#p} )) -gt "$max" ]; then
+      printf '%s\0' "$chunk"
+      chunk="$p"
+    else
+      chunk="${chunk}${p}"
+    fi
+  done
+  [ -n "$chunk" ] && printf '%s\0' "$chunk"
 }
 
 # Gemini API TTS: sends text to a Gemini-TTS model, gets back raw PCM audio
@@ -485,7 +611,24 @@ speak() {
       ;;
     ondevice)
       if command -v termux-tts-speak >/dev/null 2>&1; then
-        precleanup_stuck_tts
+        if ! precleanup_stuck_tts; then
+          # A live call is already inside its own deadline — leave it alone
+          # instead of SIGKILLing it (see precleanup_stuck_tts for why that
+          # used to self-inflict the very engine-wedge this exists to clear).
+          log skip "ondevice readout already in progress, skipping this one"
+          return 0
+        fi
+
+        # Fail fast on an already-wedged engine instead of only finding out
+        # after the full-length call below times out (up to $cap seconds —
+        # minutes, for a long full-mode readout).
+        if ! engine_is_responsive; then
+          log error "ondevice engine not responding to preflight probe"
+          notify_failure
+          start_recovery_watcher
+          return 0
+        fi
+
         local tts_args=(-r "${VOICE_READOUT_TTS_RATE:-1.3}" -p "${VOICE_READOUT_TTS_PITCH:-1.0}")
         [ -n "${VOICE_READOUT_TTS_ENGINE:-}" ] && tts_args+=(-e "$VOICE_READOUT_TTS_ENGINE")
         [ -n "${VOICE_READOUT_TTS_LANG:-}" ] && tts_args+=(-l "$VOICE_READOUT_TTS_LANG")
@@ -503,22 +646,74 @@ speak() {
         bytes="$(printf '%s' "$text" | wc -c)"
         timeout_secs=$(( 10 + bytes / 4 ))
         [ "$timeout_secs" -gt "$cap" ] && timeout_secs="$cap"
-        if timeout "$timeout_secs" termux-tts-speak "${tts_args[@]}" "$text"; then
-          log spoke "termux-tts-speak (${tts_args[*]}, timeout ${timeout_secs}s)"
+
+        # Recorded so a concurrent invocation's precleanup_stuck_tts can tell
+        # this call is still within its expected window rather than stuck.
+        printf '%s:%s' "$$" "$(( $(date +%s) + timeout_secs ))" > "$ONDEVICE_LOCK_FILE" 2>/dev/null
+
+        # A long full-mode readout can run this Termux-hosted shell for over a
+        # minute with no foreground activity, which looks to Android like a
+        # background process overstaying its welcome — plausibly why OS-level
+        # "keeps stopping" / restart warnings kept appearing right around
+        # long-readout completion even when this script logged a clean
+        # success (2026-07-20). termux-wake-lock is Termux's own mechanism for
+        # telling Android "this is intentional, don't idle/kill it" during
+        # exactly this kind of extended background work.
+        command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock 2>/dev/null
+
+        # One long call per readout used to trip the ResultReturner issue
+        # above regardless of wake-locking, so speak it as several short
+        # calls instead — each chunk gets its own timeout scaled the same way
+        # the whole text used to.
+        local chunk_max="${VOICE_READOUT_TTS_CHUNK_CHARS:-100}"
+        local chunk_count=0 failed=0 rc=0
+        while IFS= read -r -d '' chunk; do
+          [ -n "$chunk" ] || continue
+          chunk_count=$(( chunk_count + 1 ))
+          local cbytes ctimeout attempt
+          cbytes="$(printf '%s' "$chunk" | wc -c)"
+          ctimeout=$(( 10 + cbytes / 4 ))
+          [ "$ctimeout" -gt "$cap" ] && ctimeout="$cap"
+
+          # The underlying engine still hiccups occasionally even on a short
+          # chunk (chunk 4/15 failed mid-batch despite each call being only a
+          # few seconds, 2026-07-20) — one retry after clearing whatever's
+          # left over absorbs a transient blip without escalating straight to
+          # notify_failure/the recovery watcher for something that a second
+          # attempt would have played fine.
+          rc=0
+          for attempt in 1 2; do
+            timeout "$ctimeout" termux-tts-speak "${tts_args[@]}" "$chunk"
+            rc=$?
+            [ "$rc" -eq 0 ] && break
+            if [ "$attempt" -eq 1 ]; then
+              # Not precleanup_stuck_tts here: its lock check would see our
+              # own still-valid batch deadline and refuse to touch anything —
+              # correct for other invocations, wrong for cleaning up our own
+              # just-failed chunk before retrying it.
+              local stale_pids
+              stale_pids="$(ps aux 2>/dev/null | awk '$0 ~ /libexec\/termux-api TextToSpeech/ && $0 !~ /awk|grep/ {print $2}')"
+              [ -n "$stale_pids" ] && kill -9 $stale_pids 2>/dev/null
+              sleep 1
+            fi
+          done
+          if [ "$rc" -ne 0 ]; then
+            failed=1
+            break
+          fi
+        done < <(split_into_speech_chunks "$text" "$chunk_max")
+
+        rm -f "$ONDEVICE_LOCK_FILE" 2>/dev/null
+        if [ "$failed" -eq 0 ]; then
+          log spoke "termux-tts-speak (${tts_args[*]}, ${chunk_count} chunk(s), timeout ${timeout_secs}s total budget)"
           clear_failure_notifications
         else
-          local rc=$?
-          if [ "$rc" -eq 137 ]; then
-            # SIGKILL means a newer readout's precleanup replaced this one —
-            # by design during quick exchanges, not an engine failure.
-            log skip "readout superseded by a newer one"
-          else
-            log error "termux-tts-speak timed out or failed (exit $rc, timeout ${timeout_secs}s)"
-            precleanup_stuck_tts
-            notify_failure
-            start_recovery_watcher
-          fi
+          log error "termux-tts-speak timed out or failed (exit $rc, chunk ${chunk_count}/${timeout_secs}s total budget)"
+          precleanup_stuck_tts
+          notify_failure
+          start_recovery_watcher
         fi
+        command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock 2>/dev/null
       else
         log error "termux-tts-speak not found"
       fi
