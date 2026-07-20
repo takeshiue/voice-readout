@@ -31,14 +31,46 @@ set -u
 STOP_FILE="/data/data/com.termux/files/home/.voice-readout-stopped"
 NOTIF_ID="voice-readout-switch"
 
-# The button actions are plain `touch`/`rm` run by the Termux app. They
-# deliberately call nothing from this plugin: the Termux side cannot execute
-# scripts living in the container, and a stop switch that depends on the
-# thing it is stopping is not much of a switch. The trade-off is that the
-# notification's own label does not change on tap — the plugin re-posts it
-# from post_notification() the next time it runs.
+# The button action runs on the Termux side, which cannot execute anything
+# inside this container — and a stop switch that depends on the thing it is
+# stopping would be no switch at all. So the toggle logic is installed as a
+# tiny self-contained script in Termux's own home directory, which both sides
+# can reach, and the button just runs that.
+#
+# It has to re-post the notification itself. A first attempt had the buttons
+# call bare touch/rm, which flipped the file but left the notification showing
+# its old label — so after pressing 停止 there was no 再開 button anywhere and
+# the switch was one-way, strandable in the off state with no way back except
+# asking Claude, which is the exact dependency this whole mechanism exists to
+# remove.
+HELPER="/data/data/com.termux/files/home/.voice-readout-switch.sh"
+
+install_helper() {
+  cat > "$HELPER" <<HELPER_EOF
+#!/data/data/com.termux/files/usr/bin/sh
+# Installed by voice-readout (bin/readout-switch.sh). Toggles the stop switch
+# and re-posts the notification so it always shows the current state.
+STOP_FILE="$STOP_FILE"
+NOTIF_ID="$NOTIF_ID"
+
+if [ -e "\$STOP_FILE" ]; then
+  rm -f "\$STOP_FILE"
+  termux-notification --id "\$NOTIF_ID" --title "読み上げ 有効" \\
+    --content "タップで停止します" --ongoing --priority low \\
+    --button1 "停止" --button1-action "sh \$0"
+else
+  touch "\$STOP_FILE"
+  termux-notification --id "\$NOTIF_ID" --title "読み上げ 停止中" \\
+    --content "タップで再開します" --ongoing --priority low \\
+    --button1 "再開" --button1-action "sh \$0"
+fi
+HELPER_EOF
+  chmod +x "$HELPER" 2>/dev/null
+}
+
 post_notification() {
   command -v termux-notification >/dev/null 2>&1 || return 0
+  install_helper
   if [ -e "$STOP_FILE" ]; then
     termux-notification \
       --id "$NOTIF_ID" \
@@ -47,7 +79,7 @@ post_notification() {
       --ongoing \
       --priority low \
       --button1 "再開" \
-      --button1-action "rm -f $STOP_FILE" \
+      --button1-action "sh $HELPER" \
       2>/dev/null
   else
     termux-notification \
@@ -57,7 +89,7 @@ post_notification() {
       --ongoing \
       --priority low \
       --button1 "停止" \
-      --button1-action "touch $STOP_FILE" \
+      --button1-action "sh $HELPER" \
       2>/dev/null
   fi
 }
