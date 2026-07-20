@@ -847,6 +847,18 @@ speak() {
         local total_chunks="${#chunks[@]}"
         local chunk_count=0 failed=0 rc=0
         for chunk in "${chunks[@]}"; do
+          # Re-checked every chunk, not just once on the way in. Checking only
+          # at the top of speak() meant pressing 停止 during a long readout
+          # silenced the *next* readout while the current one talked on to the
+          # end — minutes, with retries. Here it takes effect within one
+          # chunk and the remaining chunks are dropped, which is what someone
+          # reaching for a stop button actually wants.
+          if [ -e "$STOP_SWITCH_FILE" ]; then
+            log skip "読み上げ停止中 (stop switch pressed mid-readout, ${chunk_count}/${total_chunks} spoken)"
+            rm -f "$ONDEVICE_LOCK_FILE" 2>/dev/null
+            command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock 2>/dev/null
+            return 0
+          fi
           chunk_count=$(( chunk_count + 1 ))
           local cbytes ctimeout attempt
           cbytes="$(printf '%s' "$chunk" | wc -c)"
@@ -898,7 +910,22 @@ speak() {
             [ "$backoff" -gt "$retry_wait_max" ] && backoff="$retry_wait_max"
             log info "chunk ${chunk_count}/${total_chunks} attempt ${attempt}/${chunk_retries} failed, backing off ${backoff}s"
             printf '%s:%s' "$$" "$(( $(date +%s) + ctimeout + backoff + 30 ))" > "$ONDEVICE_LOCK_FILE" 2>/dev/null
-            sleep "$backoff"
+            # Slept in slices rather than one long sleep so 停止 lands here
+            # too: a minute of backoff is exactly the sort of quiet gap where
+            # someone decides they have had enough and reaches for the button,
+            # and a stop that only takes effect after the wait finishes would
+            # be indistinguishable from a stop that did nothing.
+            local slept=0
+            while [ "$slept" -lt "$backoff" ]; do
+              if [ -e "$STOP_SWITCH_FILE" ]; then
+                log skip "読み上げ停止中 (stop switch pressed during backoff)"
+                rm -f "$ONDEVICE_LOCK_FILE" 2>/dev/null
+                command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock 2>/dev/null
+                return 0
+              fi
+              sleep 2
+              slept=$(( slept + 2 ))
+            done
           done
           if [ "$rc" -ne 0 ]; then
             failed=1
