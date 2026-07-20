@@ -18,8 +18,13 @@ LOG_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout.log"
 # growing forever.
 LOG_MAX_BYTES="${VOICE_READOUT_LOG_MAX_BYTES:-1048576}"
 log() {
-  local size
-  size="$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)"
+  local size=0
+  # Guarded on existence rather than relying on `2>/dev/null`: that silences
+  # wc's stderr, but a failed `<` redirection is reported by the shell itself
+  # and would still print on the very first call of a fresh install.
+  if [ -f "$LOG_FILE" ]; then
+    size="$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)"
+  fi
   case "$size" in *[!0-9]*|"") size=0 ;; esac
   if [ "$size" -gt "$LOG_MAX_BYTES" ]; then
     tail -n 500 "$LOG_FILE" > "${LOG_FILE}.tmp" 2>/dev/null && mv "${LOG_FILE}.tmp" "$LOG_FILE" 2>/dev/null
@@ -207,6 +212,14 @@ clear_failure_notifications() {
 # process from a truly stuck one (see precleanup_stuck_tts below) instead of
 # guessing from process liveness alone.
 ONDEVICE_LOCK_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-ondevice.lock"
+
+# Longest text the on-device engine reliably finishes — see the ceiling check
+# in speak() for how this number was arrived at. Exposed as a function so
+# callers that would rather shorten their text than be refused (the Stop
+# hook's summary path) can ask instead of hardcoding it.
+ondevice_max_chars() {
+  printf '%s' "${VOICE_READOUT_ONDEVICE_MAX_CHARS:-240}"
+}
 
 # A libexec/termux-api TextToSpeech process still running past its own
 # recorded deadline is stuck (a healthy call always finishes within the
@@ -668,16 +681,33 @@ speak() {
         #
         # Since it can't be recovered from without the user physically
         # force-stopping an app, the only honest design is to never enter
-        # the range where it happens. Measured on this device, with the
-        # same file read three times: 250 characters (~85s) completed every
-        # time, 336 characters (~110s) failed every time. 180 characters is
-        # roughly a minute of speech and sits ~30% below the last known-good
-        # point. Longer text is refused outright rather than started and
-        # abandoned midway — a partial readout that also bricks the engine
-        # is worse than a clear refusal.
-        local max_chars="${VOICE_READOUT_ONDEVICE_MAX_CHARS:-180}"
+        # the range where it happens. Measured on this device by reading the
+        # same file three times: 250 characters completed every time, 336
+        # characters failed every time, always at the same chunk. A timed
+        # run put 175 characters at 33s, i.e. ~5.3 chars/sec, which places
+        # that failure boundary right around a minute of speech. 240
+        # characters (~45s) stays under the last known-good point with
+        # margin left over.
+        #
+        # Over the ceiling, hand off to a cloud backend rather than refuse:
+        # deciding up front, from the text length, is predictable in a way
+        # that switching midway through a readout would not be. Only if no
+        # cloud credentials exist is there nothing to do but decline.
+        local max_chars="$(ondevice_max_chars)"
         if [ "${#text}" -gt "$max_chars" ]; then
-          log skip "text too long for ondevice (${#text} chars > ${max_chars}); use a cloud backend"
+          # ElevenLabs first: side-by-side on the same Japanese text, Inworld
+          # mispronounced noticeably more (user's call, 2026-07-20).
+          local alt=""
+          if [ -n "$(get_elevenlabs_api_key)" ]; then alt=elevenlabs
+          elif [ -n "$(get_inworld_api_key)" ]; then alt=inworld
+          elif [ -n "$(get_gemini_api_key)" ]; then alt=gemini
+          fi
+          if [ -n "$alt" ]; then
+            log fallback "text too long for ondevice (${#text} chars > ${max_chars}), using ${alt}"
+            VOICE_READOUT_TTS_BACKEND="$alt" speak "$text" "$cap"
+            return $?
+          fi
+          log skip "text too long for ondevice (${#text} chars > ${max_chars}) and no cloud backend configured"
           return 3
         fi
 

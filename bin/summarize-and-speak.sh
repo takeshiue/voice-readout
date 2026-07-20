@@ -57,7 +57,18 @@ if [ "$READOUT_MODE" = "full" ]; then
   # because one-sentence summaries lose too much for the listener to follow.
   log full "(${#CLEANED_TRIMMED} chars) ${CLEANED_TRIMMED:0:60}..."
   speak "$CLEANED_TRIMMED" 600
-  exit 0
+  rc=$?
+  if [ "$rc" -ne 3 ]; then
+    exit 0
+  fi
+  # 3 = the on-device engine declined this as too long and there is no cloud
+  # backend configured to hand it to (see the ceiling in speak()). Saying
+  # nothing at all is the worst outcome for someone who is listening rather
+  # than looking at the screen — and cloud credentials are the exception, not
+  # the rule, so this path has to stay useful without them. Fall through to
+  # the one-sentence summary below, which is always short enough for the
+  # engine to speak safely.
+  log fallback "full readout too long for ondevice, degrading to summary"
 fi
 
 # First-person framing matters: summarizing "the assistant's response" from
@@ -89,10 +100,25 @@ esac
 
 if [ -z "$SUMMARY" ]; then
   # Fallback: no LLM summary available, just read the cleaned text head.
-  SUMMARY="$(printf '%s' "$CLEANED_TRIMMED" | cut -c1-120)"
+  SUMMARY="${CLEANED_TRIMMED:0:120}"
   log fallback "$SUMMARY"
 else
   log summary "$SUMMARY"
+fi
+
+# The summary is *meant* to be one sentence, but nothing enforces that — a
+# confused or verbose summarizer can hand back something over the on-device
+# ceiling, and then speak() declines it too. This is the last stop before
+# audio: if it gets refused here the listener hears nothing at all, which
+# defeats the whole point of degrading to a summary in the first place
+# (observed: a 450-char full readout degraded to a 244-char "summary" that
+# was itself refused, so the hook spoke nothing). Trim to fit rather than
+# lose the readout entirely. Character-safe: tts-lib.sh exports a UTF-8
+# locale, so this slices by character, not byte.
+SUMMARY_MAX="$(ondevice_max_chars)"
+if [ "$(get_tts_backend)" = "ondevice" ] && [ "${#SUMMARY}" -gt "$SUMMARY_MAX" ]; then
+  log fallback "summary ${#SUMMARY} chars exceeds ondevice ceiling, trimming to ${SUMMARY_MAX}"
+  SUMMARY="${SUMMARY:0:$SUMMARY_MAX}"
 fi
 
 speak "$SUMMARY" 90
