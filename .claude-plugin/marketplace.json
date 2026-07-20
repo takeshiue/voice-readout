@@ -1,0 +1,14 @@
+{
+  "name": "voice-readout",
+  "owner": {
+    "name": "uematsu"
+  },
+  "description": "Claude Codeのやり取りを、画面を見なくても声で追えるようにするプラグイン（スマホ/Termux向け）",
+  "plugins": [
+    {
+      "name": "voice-readout",
+      "source": ".",
+      "description": "Claude Codeの応答や許可確認を音声で読み上げる。要約/フル読み上げの切替、故障の自動検知・復旧通知に対応"
+    }
+  ]
+}
