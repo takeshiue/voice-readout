@@ -647,7 +647,7 @@ speak() {
         clear_failure_notifications
       else
         log fallback "gemini backend failed, retrying via ondevice"
-        VOICE_READOUT_TTS_BACKEND=ondevice speak "$text" "$cap"
+        VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 speak "$text" "$cap"
       fi
       ;;
     inworld)
@@ -655,7 +655,7 @@ speak() {
         clear_failure_notifications
       else
         log fallback "inworld backend failed, retrying via ondevice"
-        VOICE_READOUT_TTS_BACKEND=ondevice speak "$text" "$cap"
+        VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 speak "$text" "$cap"
       fi
       ;;
     elevenlabs)
@@ -663,7 +663,7 @@ speak() {
         clear_failure_notifications
       else
         log fallback "elevenlabs backend failed, retrying via ondevice"
-        VOICE_READOUT_TTS_BACKEND=ondevice speak "$text" "$cap"
+        VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 speak "$text" "$cap"
       fi
       ;;
     ondevice)
@@ -697,10 +697,19 @@ speak() {
         if [ "${#text}" -gt "$max_chars" ]; then
           # ElevenLabs first: side-by-side on the same Japanese text, Inworld
           # mispronounced noticeably more (user's call, 2026-07-20).
+          #
+          # VOICE_READOUT_NO_CLOUD_FALLBACK is set by the cloud branches when
+          # they fail over to here, and blocks the return trip. Without it the
+          # two fallbacks feed each other: a cloud backend that errors (expired
+          # key, no network — seen live as an HTTP 401) falls back to ondevice,
+          # whose ceiling then routes the same over-length text straight back
+          # to the cloud backend that just failed, forever.
           local alt=""
-          if [ -n "$(get_elevenlabs_api_key)" ]; then alt=elevenlabs
-          elif [ -n "$(get_inworld_api_key)" ]; then alt=inworld
-          elif [ -n "$(get_gemini_api_key)" ]; then alt=gemini
+          if [ -z "${VOICE_READOUT_NO_CLOUD_FALLBACK:-}" ]; then
+            if [ -n "$(get_elevenlabs_api_key)" ]; then alt=elevenlabs
+            elif [ -n "$(get_inworld_api_key)" ]; then alt=inworld
+            elif [ -n "$(get_gemini_api_key)" ]; then alt=gemini
+            fi
           fi
           if [ -n "$alt" ]; then
             log fallback "text too long for ondevice (${#text} chars > ${max_chars}), using ${alt}"
