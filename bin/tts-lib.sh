@@ -76,14 +76,45 @@ get_persona_style() {
 # (including the old "termux" name from before the rename) falls back to
 # "ondevice", so old config files stay compatible. Env var override takes
 # priority for one-off testing without touching the config.
+#
+# Chosen per function, not once for the whole plugin. The four things this
+# plugin speaks — a notification, a summary of a response, a response in
+# full, an external file — are separate choices that belong to the user; the
+# plugin does not get to decide that, say, notifications "should" be
+# on-device because they are short. Anyone who wants a nicer cloud voice for
+# their permission prompts is entitled to it.
+#
+# Resolution order, most specific first:
+#   VOICE_READOUT_TTS_BACKEND      env, overrides everything (one-off tests)
+#   TTS_BACKEND_<FUNCTION>=        config, this function's choice
+#   TTS_BACKEND=                   config, the older single setting
+#   ondevice                       default
+#
+# Defaults are all "ondevice" deliberately: it needs no API key, no network,
+# and starts speaking immediately, so a fresh install is useful with zero
+# setup. Users don't know an application's internals — the out-of-the-box
+# configuration has to be the convenient one, with customisation available
+# to whoever wants it.
+FUNCTION_KEYS="notification summary full file"
 get_tts_backend() {
+  local fn="${1:-}"
   if [ -n "${VOICE_READOUT_TTS_BACKEND:-}" ]; then
     echo "$VOICE_READOUT_TTS_BACKEND"
     return
   fi
-  [ -f "$CONFIG_FILE" ] || { echo ondevice; return; }
-  local val
-  val="$(grep -E '^TTS_BACKEND=' "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2)"
+  local val=""
+  if [ -f "$CONFIG_FILE" ]; then
+    if [ -n "$fn" ]; then
+      local key
+      key="TTS_BACKEND_$(printf '%s' "$fn" | tr '[:lower:]' '[:upper:]')"
+      val="$(grep -E "^${key}=" "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2)"
+    fi
+    # Falling back to the global TTS_BACKEND keeps config files written
+    # before per-function keys existed working exactly as they did.
+    if [ -z "$val" ]; then
+      val="$(grep -E '^TTS_BACKEND=' "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2)"
+    fi
+  fi
   case "$val" in
     gemini) echo gemini ;;
     inworld) echo inworld ;;
@@ -641,13 +672,17 @@ speak_elevenlabs() {
 speak() {
   local text="$1"
   local cap="${2:-90}"
-  case "$(get_tts_backend)" in
+  # Which of the four functions is speaking: notification | summary | full |
+  # file. Selects that function's configured backend (see get_tts_backend).
+  # Empty is allowed and just means "use the global setting".
+  local fn="${3:-}"
+  case "$(get_tts_backend "$fn")" in
     gemini)
       if speak_gemini "$text" "$cap"; then
         clear_failure_notifications
       else
         log fallback "gemini backend failed, retrying via ondevice"
-        VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 speak "$text" "$cap"
+        VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 speak "$text" "$cap" "$fn"
       fi
       ;;
     inworld)
@@ -655,7 +690,7 @@ speak() {
         clear_failure_notifications
       else
         log fallback "inworld backend failed, retrying via ondevice"
-        VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 speak "$text" "$cap"
+        VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 speak "$text" "$cap" "$fn"
       fi
       ;;
     elevenlabs)
@@ -663,7 +698,7 @@ speak() {
         clear_failure_notifications
       else
         log fallback "elevenlabs backend failed, retrying via ondevice"
-        VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 speak "$text" "$cap"
+        VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 speak "$text" "$cap" "$fn"
       fi
       ;;
     ondevice)
@@ -713,7 +748,7 @@ speak() {
           fi
           if [ -n "$alt" ]; then
             log fallback "text too long for ondevice (${#text} chars > ${max_chars}), using ${alt}"
-            VOICE_READOUT_TTS_BACKEND="$alt" speak "$text" "$cap"
+            VOICE_READOUT_TTS_BACKEND="$alt" speak "$text" "$cap" "$fn"
             return $?
           fi
           log skip "text too long for ondevice (${#text} chars > ${max_chars}) and no cloud backend configured"

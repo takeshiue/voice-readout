@@ -56,7 +56,7 @@ if [ "$READOUT_MODE" = "full" ]; then
   # Full mode: read the cleaned text verbatim, no summarization. Requested
   # because one-sentence summaries lose too much for the listener to follow.
   log full "(${#CLEANED_TRIMMED} chars) ${CLEANED_TRIMMED:0:60}..."
-  speak "$CLEANED_TRIMMED" 600
+  speak "$CLEANED_TRIMMED" 600 full
   rc=$?
   if [ "$rc" -ne 3 ]; then
     exit 0
@@ -116,11 +116,11 @@ fi
 # lose the readout entirely. Character-safe: tts-lib.sh exports a UTF-8
 # locale, so this slices by character, not byte.
 SUMMARY_MAX="$(ondevice_max_chars)"
-if [ "$(get_tts_backend)" = "ondevice" ] && [ "${#SUMMARY}" -gt "$SUMMARY_MAX" ]; then
+if [ "$(get_tts_backend summary)" = "ondevice" ] && [ "${#SUMMARY}" -gt "$SUMMARY_MAX" ]; then
   log fallback "summary ${#SUMMARY} chars exceeds ondevice ceiling, trimming to ${SUMMARY_MAX}"
   SUMMARY="${SUMMARY:0:$SUMMARY_MAX}"
 fi
 
-speak "$SUMMARY" 90
+speak "$SUMMARY" 90 summary
 
 exit 0

@@ -6,6 +6,8 @@
 #        toggle.sh mode <summary|full>
 #        toggle.sh persona <on|off>
 #        toggle.sh backend <ondevice|gemini|inworld|elevenlabs>
+#        toggle.sh backend-<notification|summary|full|file> <ondevice|gemini|inworld|elevenlabs>
+#        toggle.sh init
 #        toggle.sh gemini-key <API_KEY|clear>
 #        toggle.sh inworld-key <API_KEY|clear>
 #        toggle.sh elevenlabs-key <API_KEY|clear>
@@ -16,7 +18,15 @@
 #                full    = verbatim readout of the response (minus code/URLs)
 #   persona      on  = apply the tone preset in personas/persona.md
 #                off = plain, short, neutral phrasing (default)
-#   backend      ondevice   = on-device Android TTS via Termux:API (default, offline)
+#   backend      the default for every function
+#   backend-*    that one function's engine, overriding the default:
+#                notification = permission/idle prompts
+#                summary      = one-sentence summary of a response
+#                full         = verbatim readout of a response
+#                file         = external text file readout
+#                Each is the user's choice; all four default to ondevice
+#                because it needs no key, no network, and starts instantly.
+#                ondevice   = on-device Android TTS via Termux:API (default, offline)
 #                gemini     = Gemini API TTS (needs network + gemini-key set)
 #                inworld    = Inworld Realtime TTS-1.5 Mini (needs network + inworld-key set)
 #                elevenlabs = ElevenLabs eleven_flash_v2_5 (needs network + elevenlabs-key set)
@@ -36,15 +46,22 @@ usage() {
   echo "       $0 mode <summary|full>" >&2
   echo "       $0 persona <on|off>" >&2
   echo "       $0 backend <ondevice|gemini|inworld|elevenlabs>" >&2
+  echo "       $0 backend-<notification|summary|full|file> <ondevice|gemini|inworld|elevenlabs>" >&2
   echo "       $0 gemini-key <API_KEY|clear>" >&2
   echo "       $0 inworld-key <API_KEY|clear>" >&2
   echo "       $0 elevenlabs-key <API_KEY|clear>" >&2
   exit 1
 }
 
-[ $# -eq 2 ] || usage
-TARGET="$1"
-STATE="$2"
+# `init` is the one subcommand that takes no second argument.
+if [ "${1:-}" = "init" ]; then
+  TARGET=init
+  STATE=""
+else
+  [ $# -eq 2 ] || usage
+  TARGET="$1"
+  STATE="$2"
+fi
 
 set_key() {
   local key="$1" value="$2"
@@ -81,6 +98,30 @@ has_env_key() {
 }
 
 case "$TARGET" in
+  init)
+    # Writes every setting at its default, so the config file itself shows
+    # what can be changed. Users don't read source to find out what knobs
+    # exist. Only fills in keys that are missing — an existing choice is
+    # never overwritten, so this is safe to re-run after an upgrade adds
+    # new settings.
+    touch "$CONFIG_FILE"
+    add_default() {
+      grep -q -E "^$1=" "$CONFIG_FILE" 2>/dev/null || printf '%s=%s\n' "$1" "$2" >> "$CONFIG_FILE"
+    }
+    add_default STOP_READOUT on
+    add_default NOTIFICATION_READOUT on
+    add_default READOUT_MODE summary
+    # One engine per function, each the user's own choice. All default to
+    # ondevice: no API key, no network, speaks immediately.
+    add_default TTS_BACKEND ondevice
+    add_default TTS_BACKEND_NOTIFICATION ondevice
+    add_default TTS_BACKEND_SUMMARY ondevice
+    add_default TTS_BACKEND_FULL ondevice
+    add_default TTS_BACKEND_FILE ondevice
+    echo "voice-readout: config initialised at $CONFIG_FILE"
+    cat "$CONFIG_FILE"
+    exit 0
+    ;;
   stop|notification|all)
     case "$STATE" in on|off) ;; *) usage ;; esac
     case "$TARGET" in
@@ -107,7 +148,7 @@ case "$TARGET" in
     echo "voice-readout: persona -> ${STATE}"
     exit 0
     ;;
-  backend)
+  backend|backend-notification|backend-summary|backend-full|backend-file)
     case "$STATE" in ondevice|gemini|inworld|elevenlabs) ;; *) usage ;; esac
     if [ "$STATE" = gemini ] && ! has_env_key GEMINI_API_KEY; then
       echo "warning: gemini backend selected but no API key set yet." >&2
@@ -121,7 +162,16 @@ case "$TARGET" in
       echo "warning: elevenlabs backend selected but no API key set yet." >&2
       echo "         run: $0 elevenlabs-key <API_KEY>" >&2
     fi
-    set_key TTS_BACKEND "$STATE"
+    # "backend" sets the shared default; the per-function forms set only their
+    # own function, so a user can give, say, notifications a different voice
+    # from a file readout without disturbing the rest.
+    case "$TARGET" in
+      backend)              set_key TTS_BACKEND "$STATE" ;;
+      backend-notification) set_key TTS_BACKEND_NOTIFICATION "$STATE" ;;
+      backend-summary)      set_key TTS_BACKEND_SUMMARY "$STATE" ;;
+      backend-full)         set_key TTS_BACKEND_FULL "$STATE" ;;
+      backend-file)         set_key TTS_BACKEND_FILE "$STATE" ;;
+    esac
     ;;
   gemini-key)
     if [ "$STATE" = clear ]; then

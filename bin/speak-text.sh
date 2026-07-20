@@ -37,7 +37,7 @@ cap=$(( 30 + bytes / 3 ))
 [ "$cap" -gt 900 ] && cap=900
 
 log manual "speak-text.sh (${#TEXT} chars) from ${SRC}"
-speak "$TEXT" "$cap"
+speak "$TEXT" "$cap" file
 rc=$?
 
 # 3 = ondevice declined the text as too long (see the ceiling in speak()).

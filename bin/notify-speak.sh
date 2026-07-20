@@ -67,10 +67,13 @@ else
   esac
 fi
 
-# Always ondevice here, regardless of the TTS_BACKEND toggle: permission/idle
-# prompts want an instant cue, and Gemini's ~5-7s network round trip before
-# any sound starts defeats the purpose (measured 2026-07-20). The backend
-# toggle only affects the Stop-hook summary readout (summarize-and-speak.sh).
-VOICE_READOUT_TTS_BACKEND=ondevice speak "$PHRASE"
+# Backend comes from TTS_BACKEND_NOTIFICATION, defaulting to ondevice. It used
+# to be hardcoded to ondevice on the reasoning that a permission prompt wants
+# an instant cue and a cloud round trip (~5-7s before any sound, measured
+# 2026-07-20) defeats that. That reasoning is sound enough to be the default,
+# but not to be the only option: it is the user's call, and someone who
+# prefers a better voice for their prompts and doesn't mind the delay is
+# entitled to choose it.
+speak "$PHRASE" 90 notification
 
 exit 0
