@@ -1,6 +1,17 @@
 # Shared TTS helpers for voice-readout hooks. Sourced, not executed.
 # Callers must be registered with "async": true and must always exit 0.
 
+# split_into_speech_chunks (below) uses bash's ${#s} and ${s:a:b}, which only
+# count/slice by Unicode character under a UTF-8-aware locale — otherwise
+# they operate byte-wise, and slicing a multi-byte Japanese character in half
+# produces invalid UTF-8. That silently corrupted every chunk boundary
+# whenever the invoking shell had no locale set (confirmed 2026-07-20: same
+# chunk index failing identically across unrelated runs, traced to the
+# resulting garbage bytes hanging termux-tts-speak). Force a UTF-8 locale
+# here regardless of the caller's environment; C.utf8 needs no
+# language-specific locale installed.
+export LC_ALL=C.utf8
+
 LOG_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout.log"
 # This file is appended to indefinitely across sessions with nothing else
 # trimming it, so self-rotate once it grows past a threshold instead of
@@ -245,7 +256,9 @@ precleanup_stuck_tts() {
 # (which, for a long full-mode readout, could mean minutes before anyone —
 # user or notify_failure — learns something is wrong).
 engine_is_responsive() {
-  timeout "${VOICE_READOUT_PREFLIGHT_TIMEOUT:-10}" termux-tts-engines >/dev/null 2>&1
+  # </dev/null: termux-* wrappers drain any stdin they inherit, which would
+  # eat a caller's loop input (see the chunk-array comment in speak()).
+  timeout "${VOICE_READOUT_PREFLIGHT_TIMEOUT:-10}" termux-tts-engines >/dev/null 2>&1 </dev/null
 }
 
 # Splits text into sentence-bounded chunks (each capped at roughly $max
@@ -666,49 +679,87 @@ speak() {
         # calls instead — each chunk gets its own timeout scaled the same way
         # the whole text used to.
         local chunk_max="${VOICE_READOUT_TTS_CHUNK_CHARS:-100}"
-        local chunk_count=0 failed=0 rc=0
+        local chunk_retries="${VOICE_READOUT_TTS_CHUNK_RETRIES:-4}"
+        local retry_wait_max="${VOICE_READOUT_TTS_RETRY_WAIT:-90}"
+        local retry_poll="${VOICE_READOUT_TTS_RETRY_POLL:-5}"
+        # Collect every chunk up front rather than streaming them into a
+        # `while read` loop. termux-tts-speak / termux-tts-engines drain
+        # whatever stdin they inherit (verified 2026-07-20: a 7-item loop ran
+        # exactly one iteration once a termux-* call was placed inside it),
+        # so with a process substitution feeding the loop they ate the
+        # remaining chunks — the readout stopped a few chunks in, and because
+        # every chunk that *did* run succeeded, it was then logged as a clean
+        # success with an undercounted chunk total. Reading into an array
+        # first removes the shared stdin entirely; the </dev/null on each
+        # termux call below is the second line of defence.
+        local chunks=() chunk
         while IFS= read -r -d '' chunk; do
-          [ -n "$chunk" ] || continue
+          [ -n "$chunk" ] && chunks+=("$chunk")
+        done < <(split_into_speech_chunks "$text" "$chunk_max")
+
+        local total_chunks="${#chunks[@]}"
+        local chunk_count=0 failed=0 rc=0
+        for chunk in "${chunks[@]}"; do
           chunk_count=$(( chunk_count + 1 ))
           local cbytes ctimeout attempt
           cbytes="$(printf '%s' "$chunk" | wc -c)"
           ctimeout=$(( 10 + cbytes / 4 ))
           [ "$ctimeout" -gt "$cap" ] && ctimeout="$cap"
 
-          # The underlying engine still hiccups occasionally even on a short
-          # chunk (chunk 4/15 failed mid-batch despite each call being only a
-          # few seconds, 2026-07-20) — one retry after clearing whatever's
-          # left over absorbs a transient blip without escalating straight to
-          # notify_failure/the recovery watcher for something that a second
-          # attempt would have played fine.
+          # A flat 1s pause-and-retry (the old design) mostly just hit the
+          # same still-wedged engine again — recovery-watcher.sh's own log
+          # shows real recoveries taking anywhere from well under a minute to
+          # much longer. The user has explicitly said a slower-but-eventually-
+          # completes readout beats a fast failure (2026-07-20), so this waits
+          # for engine_is_responsive to actually confirm recovery (bounded by
+          # retry_wait_max) between attempts instead of guessing, and allows
+          # more attempts than before.
           rc=0
-          for attempt in 1 2; do
-            timeout "$ctimeout" termux-tts-speak "${tts_args[@]}" "$chunk"
+          for attempt in $(seq 1 "$chunk_retries"); do
+            # Refresh the shared deadline before every attempt (including the
+            # first) so a concurrent invocation's precleanup_stuck_tts sees
+            # "still legitimately in flight" throughout potentially several
+            # minutes of retrying, rather than "past its original deadline,
+            # safe to kill" — which would recreate the self-inflicted
+            # collision this lock exists to prevent.
+            printf '%s:%s' "$$" "$(( $(date +%s) + ctimeout + retry_wait_max + 10 ))" > "$ONDEVICE_LOCK_FILE" 2>/dev/null
+            timeout "$ctimeout" termux-tts-speak "${tts_args[@]}" "$chunk" </dev/null
             rc=$?
             [ "$rc" -eq 0 ] && break
-            if [ "$attempt" -eq 1 ]; then
-              # Not precleanup_stuck_tts here: its lock check would see our
-              # own still-valid batch deadline and refuse to touch anything —
-              # correct for other invocations, wrong for cleaning up our own
-              # just-failed chunk before retrying it.
-              local stale_pids
-              stale_pids="$(ps aux 2>/dev/null | awk '$0 ~ /libexec\/termux-api TextToSpeech/ && $0 !~ /awk|grep/ {print $2}')"
-              [ -n "$stale_pids" ] && kill -9 $stale_pids 2>/dev/null
-              sleep 1
-            fi
+            [ "$attempt" -eq "$chunk_retries" ] && break
+
+            # Not precleanup_stuck_tts here: its lock check would see our own
+            # still-valid deadline (just refreshed above) and refuse to touch
+            # anything — correct for other invocations, wrong for cleaning up
+            # our own just-failed attempt before retrying it.
+            local stale_pids
+            stale_pids="$(ps aux 2>/dev/null | awk '$0 ~ /libexec\/termux-api TextToSpeech/ && $0 !~ /awk|grep/ {print $2}')"
+            [ -n "$stale_pids" ] && kill -9 $stale_pids 2>/dev/null
+
+            log info "chunk ${chunk_count}/${total_chunks} attempt ${attempt}/${chunk_retries} failed, waiting up to ${retry_wait_max}s for engine to recover"
+            local waited=0
+            while [ "$waited" -lt "$retry_wait_max" ]; do
+              engine_is_responsive && break
+              sleep "$retry_poll"
+              waited=$(( waited + retry_poll ))
+              printf '%s:%s' "$$" "$(( $(date +%s) + ctimeout + retry_wait_max + 10 ))" > "$ONDEVICE_LOCK_FILE" 2>/dev/null
+            done
           done
           if [ "$rc" -ne 0 ]; then
             failed=1
             break
           fi
-        done < <(split_into_speech_chunks "$text" "$chunk_max")
+        done
 
         rm -f "$ONDEVICE_LOCK_FILE" 2>/dev/null
-        if [ "$failed" -eq 0 ]; then
-          log spoke "termux-tts-speak (${tts_args[*]}, ${chunk_count} chunk(s), timeout ${timeout_secs}s total budget)"
+        # Report spoken/total, not just a bare count: an undercount silently
+        # passing as success is exactly what the stdin-drain bug above looked
+        # like from the log, so make a partial readout visible on its face.
+        if [ "$failed" -eq 0 ] && [ "$chunk_count" -eq "$total_chunks" ]; then
+          log spoke "termux-tts-speak (${tts_args[*]}, ${chunk_count}/${total_chunks} chunks, timeout ${timeout_secs}s total budget)"
           clear_failure_notifications
         else
-          log error "termux-tts-speak timed out or failed (exit $rc, chunk ${chunk_count}/${timeout_secs}s total budget)"
+          log error "termux-tts-speak timed out or failed (exit $rc, stopped at chunk ${chunk_count}/${total_chunks})"
           precleanup_stuck_tts
           notify_failure
           start_recovery_watcher
