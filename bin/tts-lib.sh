@@ -277,7 +277,19 @@ precleanup_stuck_tts() {
 engine_is_responsive() {
   # </dev/null: termux-* wrappers drain any stdin they inherit, which would
   # eat a caller's loop input (see the chunk-array comment in speak()).
-  timeout "${VOICE_READOUT_PREFLIGHT_TIMEOUT:-10}" termux-tts-engines >/dev/null 2>&1 </dev/null
+  if timeout "${VOICE_READOUT_PREFLIGHT_TIMEOUT:-10}" termux-tts-engines >/dev/null 2>&1 </dev/null; then
+    return 0
+  fi
+  # timeout signals the sh wrapper; the libexec/termux-api grandchild it
+  # spawned survives and keeps holding the engine binding it was waiting on.
+  # Left alone these accumulate one per probe and smother the very engine the
+  # probe is trying to find alive again (2026-07-20). Reap ours before
+  # reporting failure — matched narrowly on LIST_AVAILABLE so this can never
+  # touch a TextToSpeech process that is actually speaking.
+  local probe_pids
+  probe_pids="$(ps aux 2>/dev/null | awk '$0 ~ /libexec\/termux-api TextToSpeech/ && $0 ~ /LIST_AVAILABLE/ && $0 !~ /awk|grep/ {print $2}')"
+  [ -n "$probe_pids" ] && kill -9 $probe_pids 2>/dev/null
+  return 1
 }
 
 # Splits text into sentence-bounded chunks (each capped at roughly $max
@@ -643,6 +655,32 @@ speak() {
       ;;
     ondevice)
       if command -v termux-tts-speak >/dev/null 2>&1; then
+        # Hard length ceiling, checked before touching the engine at all.
+        #
+        # Termux:API wedges partway through a sustained readout and then
+        # refuses every subsequent call until the app is force-stopped by
+        # hand — an upstream bug open and unfixed since 2018
+        # (termux/termux-api#244: "after repeated use, all termux-api
+        # commands hang", not fixed by clearing app data). Nothing on this
+        # side prevents it: chunking, backoff, wake-locks, removing every
+        # source of concurrent interference — all were tried on 2026-07-20
+        # and it still wedges.
+        #
+        # Since it can't be recovered from without the user physically
+        # force-stopping an app, the only honest design is to never enter
+        # the range where it happens. Measured on this device, with the
+        # same file read three times: 250 characters (~85s) completed every
+        # time, 336 characters (~110s) failed every time. 180 characters is
+        # roughly a minute of speech and sits ~30% below the last known-good
+        # point. Longer text is refused outright rather than started and
+        # abandoned midway — a partial readout that also bricks the engine
+        # is worse than a clear refusal.
+        local max_chars="${VOICE_READOUT_ONDEVICE_MAX_CHARS:-180}"
+        if [ "${#text}" -gt "$max_chars" ]; then
+          log skip "text too long for ondevice (${#text} chars > ${max_chars}); use a cloud backend"
+          return 3
+        fi
+
         if ! precleanup_stuck_tts; then
           # A live call is already inside its own deadline — leave it alone
           # instead of SIGKILLing it (see precleanup_stuck_tts for why that
@@ -699,8 +737,9 @@ speak() {
         # the whole text used to.
         local chunk_max="${VOICE_READOUT_TTS_CHUNK_CHARS:-100}"
         local chunk_retries="${VOICE_READOUT_TTS_CHUNK_RETRIES:-4}"
+        # Linear backoff between attempts: base, 2x base, 3x base, capped.
+        local retry_wait_base="${VOICE_READOUT_TTS_RETRY_WAIT_BASE:-20}"
         local retry_wait_max="${VOICE_READOUT_TTS_RETRY_WAIT:-90}"
-        local retry_poll="${VOICE_READOUT_TTS_RETRY_POLL:-5}"
         # Collect every chunk up front rather than streaming them into a
         # `while read` loop. termux-tts-speak / termux-tts-engines drain
         # whatever stdin they inherit (verified 2026-07-20: a 7-item loop ran
@@ -755,14 +794,22 @@ speak() {
             stale_pids="$(ps aux 2>/dev/null | awk '$0 ~ /libexec\/termux-api TextToSpeech/ && $0 !~ /awk|grep/ {print $2}')"
             [ -n "$stale_pids" ] && kill -9 $stale_pids 2>/dev/null
 
-            log info "chunk ${chunk_count}/${total_chunks} attempt ${attempt}/${chunk_retries} failed, waiting up to ${retry_wait_max}s for engine to recover"
-            local waited=0
-            while [ "$waited" -lt "$retry_wait_max" ]; do
-              engine_is_responsive && break
-              sleep "$retry_poll"
-              waited=$(( waited + retry_poll ))
-              printf '%s:%s' "$$" "$(( $(date +%s) + ctimeout + retry_wait_max + 10 ))" > "$ONDEVICE_LOCK_FILE" 2>/dev/null
-            done
+            # Deliberately does NOT poll engine_is_responsive while waiting.
+            # Every probe is itself a fresh binding attempt, and a probe that
+            # times out leaves its libexec/termux-api child alive holding that
+            # binding (timeout signals the sh wrapper, not the grandchild) —
+            # observed 2026-07-20 with two stuck LIST_AVAILABLE probes
+            # accumulating during a single recovery wait. Polling every few
+            # seconds therefore piles connections onto an engine that is
+            # already refusing to serve them, which plausibly explains why a
+            # wedged engine "never recovered on its own" and always seemed to
+            # need a manual force-stop. Waiting quietly gives the engine an
+            # idle window to unwedge in; the retry itself is the next probe.
+            local backoff=$(( retry_wait_base * attempt ))
+            [ "$backoff" -gt "$retry_wait_max" ] && backoff="$retry_wait_max"
+            log info "chunk ${chunk_count}/${total_chunks} attempt ${attempt}/${chunk_retries} failed, backing off ${backoff}s"
+            printf '%s:%s' "$$" "$(( $(date +%s) + ctimeout + backoff + 30 ))" > "$ONDEVICE_LOCK_FILE" 2>/dev/null
+            sleep "$backoff"
           done
           if [ "$rc" -ne 0 ]; then
             failed=1

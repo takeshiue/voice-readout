@@ -38,3 +38,19 @@ cap=$(( 30 + bytes / 3 ))
 
 log manual "speak-text.sh (${#TEXT} chars) from ${SRC}"
 speak "$TEXT" "$cap"
+rc=$?
+
+# 3 = ondevice declined the text as too long (see the ceiling in speak()).
+# Surface it here rather than exiting silently: this is run interactively, so
+# the caller needs to know nothing was spoken and why.
+if [ "$rc" -eq 3 ]; then
+  cat >&2 <<MSG
+オンデバイス読み上げは長文に対応していません（${#TEXT}文字）。
+Termux:API が長い読み上げの途中で停止し、アプリを手動で強制停止するまで復旧しないため、
+安全な長さを超えるテキストは実行せずに中止しています。
+長文を読み上げるには、クラウド系のバックエンドに切り替えてください:
+  bin/toggle.sh backend inworld     （または elevenlabs / gemini）
+MSG
+  exit 3
+fi
+exit 0

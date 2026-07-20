@@ -22,7 +22,11 @@ LOCK_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-watcher.lock"
 exec 9>"$LOCK_FILE"
 flock -n 9 || exit 0
 
-INTERVAL="${VOICE_READOUT_WATCH_INTERVAL:-60}"
+# Probing costs an engine binding each time (engine_is_responsive reaps the
+# child it leaks, but the attempt itself still lands on a wedged engine), so
+# probe sparingly — a tight interval turns "watch for recovery" into "keep the
+# engine too busy to recover". 2026-07-20.
+INTERVAL="${VOICE_READOUT_WATCH_INTERVAL:-120}"
 MAX_TRIES="${VOICE_READOUT_WATCH_TRIES:-30}"
 
 log watcher "started (interval ${INTERVAL}s, max ${MAX_TRIES} tries)"
