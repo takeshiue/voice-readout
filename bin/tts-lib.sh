@@ -227,23 +227,42 @@ ONDEVICE_LOCK_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-ondevice.lock"
 # the engine to check it, and doing that mid-utterance risks stealing the
 # engine binding out from under the call that's actually speaking, which
 # would look identical to "the engine hung" from the outside).
+# The lock file — not the momentary presence of a TextToSpeech process — is
+# the authority on "a readout is underway". Deriving it from a live process
+# (the previous design) had a hole exactly where it mattered: between two
+# chunks of a multi-chunk readout no TextToSpeech process exists for a
+# moment, so this reported "idle", and whoever asked during that window
+# (recovery-watcher.sh's periodic probe, or another invocation's precleanup)
+# felt free to bind or kill the engine — landing right on top of the next
+# chunk. That is what made a long readout fail reproducibly at whichever
+# chunk happened to line up with the watcher's 60s probe interval
+# (chunk 3, repeatedly, 2026-07-20), which read as "the engine hangs" but
+# was self-inflicted. speak() holds this lock across the whole batch,
+# refreshing the deadline around every attempt and every recovery wait, so
+# it stays true through the inter-chunk gaps too.
 ondevice_call_in_progress() {
-  local pids deadline
-  pids="$(ps aux 2>/dev/null | awk '$0 ~ /libexec\/termux-api TextToSpeech/ && $0 !~ /awk|grep/ {print $2}')"
-  [ -z "$pids" ] && return 1
+  local owner deadline
+  [ -f "$ONDEVICE_LOCK_FILE" ] || return 1
+  owner="$(cut -d: -f1 "$ONDEVICE_LOCK_FILE" 2>/dev/null)"
   deadline="$(cut -d: -f2 "$ONDEVICE_LOCK_FILE" 2>/dev/null)"
-  case "$deadline" in ''|*[!0-9]*) deadline=0 ;; esac
+  case "$owner" in ''|*[!0-9]*) return 1 ;; esac
+  case "$deadline" in ''|*[!0-9]*) return 1 ;; esac
+  # A crashed owner must not keep the slot reserved forever, and a deadline
+  # that has passed means the batch is over (or wedged) either way.
+  kill -0 "$owner" 2>/dev/null || return 1
   [ "$(date +%s)" -lt "$deadline" ]
 }
 
 precleanup_stuck_tts() {
-  local pids
-  pids="$(ps aux 2>/dev/null | awk '$0 ~ /libexec\/termux-api TextToSpeech/ && $0 !~ /awk|grep/ {print $2}')"
-  [ -z "$pids" ] && return 0
-
+  # Asked before touching anything, and independently of whether a
+  # TextToSpeech process happens to exist right now — see above.
   if ondevice_call_in_progress; then
     return 1
   fi
+
+  local pids
+  pids="$(ps aux 2>/dev/null | awk '$0 ~ /libexec\/termux-api TextToSpeech/ && $0 !~ /awk|grep/ {print $2}')"
+  [ -z "$pids" ] && { rm -f "$ONDEVICE_LOCK_FILE" 2>/dev/null; return 0; }
 
   kill -9 $pids 2>/dev/null
   rm -f "$ONDEVICE_LOCK_FILE" 2>/dev/null
