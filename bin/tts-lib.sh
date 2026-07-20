@@ -669,7 +669,22 @@ speak_elevenlabs() {
   return 0
 }
 
+# Fixed absolute path on purpose — see bin/readout-switch.sh. Every other path
+# in this file is built from CLAUDE_PLUGIN_DATA; this one must not be, because
+# redirecting that variable is precisely how the ordinary toggles get
+# bypassed.
+STOP_SWITCH_FILE="/data/data/com.termux/files/home/.voice-readout-stopped"
+
 speak() {
+  # Checked first, before the config, before the enable toggles, before the
+  # backend is even resolved. Anything that reads configuration can be
+  # redirected at it; this cannot. If the user has pressed 停止, nothing in
+  # this plugin speaks, whatever else it was told to do.
+  if [ -e "$STOP_SWITCH_FILE" ]; then
+    log skip "読み上げ停止中 (stop switch is on)"
+    return 0
+  fi
+
   local text="$1"
   local cap="${2:-90}"
   # Which of the four functions is speaking: notification | summary | full |
