@@ -61,14 +61,15 @@ if [ "$READOUT_MODE" = "full" ]; then
   if [ "$rc" -ne 3 ]; then
     exit 0
   fi
-  # 3 = the on-device engine declined this as too long and there is no cloud
-  # backend configured to hand it to (see the ceiling in speak()). Saying
-  # nothing at all is the worst outcome for someone who is listening rather
-  # than looking at the screen — and cloud credentials are the exception, not
-  # the rule, so this path has to stay useful without them. Fall through to
-  # the one-sentence summary below, which is always short enough for the
-  # engine to speak safely.
+  # 3 = the on-device engine declined this as too long (see the ceiling in
+  # speak()). The on-device backend was chosen deliberately, so we stay on it
+  # rather than switching to a cloud voice — fall through to the one-sentence
+  # summary below, which is always short enough for the engine to speak safely.
+  # Saying nothing at all is the worst outcome for someone who is listening
+  # rather than looking at the screen. OVERFLOW makes the summary announce
+  # itself as a summary so the listener knows the full text was shortened.
   log fallback "full readout too long for ondevice, degrading to summary"
+  OVERFLOW=1
 fi
 
 # First-person framing matters: summarizing "the assistant's response" from
@@ -115,6 +116,13 @@ fi
 # was itself refused, so the hook spoke nothing). Trim to fit rather than
 # lose the readout entirely. Character-safe: tts-lib.sh exports a UTF-8
 # locale, so this slices by character, not byte.
+# When we degraded here from an over-length full readout, tell the listener the
+# text was shortened. Prepended before the trim so the notice can't be the part
+# that gets cut.
+if [ -n "${OVERFLOW:-}" ]; then
+  SUMMARY="${READOUT_OVERFLOW_NOTICE}${SUMMARY}"
+fi
+
 SUMMARY_MAX="$(ondevice_max_chars)"
 if [ "$(get_tts_backend summary)" = "ondevice" ] && [ "${#SUMMARY}" -gt "$SUMMARY_MAX" ]; then
   log fallback "summary ${#SUMMARY} chars exceeds ondevice ceiling, trimming to ${SUMMARY_MAX}"

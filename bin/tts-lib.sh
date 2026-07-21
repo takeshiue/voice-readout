@@ -252,6 +252,11 @@ ondevice_max_chars() {
   printf '%s' "${VOICE_READOUT_ONDEVICE_MAX_CHARS:-240}"
 }
 
+# Spoken as a short preface when an over-length readout is degraded to a summary
+# (see the on-device ceiling in speak()). Lets a listener who asked for the full
+# text or a file know they are hearing a summary instead of the whole thing.
+READOUT_OVERFLOW_NOTICE="${VOICE_READOUT_OVERFLOW_NOTICE:-文字数が超過したため、要約でお伝えします。}"
+
 # A libexec/termux-api TextToSpeech process still running past its own
 # recorded deadline is stuck (a healthy call always finishes within the
 # timeout speak() wrapped it in) and safe to SIGKILL. But one still inside its
@@ -739,34 +744,16 @@ speak() {
         # characters (~45s) stays under the last known-good point with
         # margin left over.
         #
-        # Over the ceiling, hand off to a cloud backend rather than refuse:
-        # deciding up front, from the text length, is predictable in a way
-        # that switching midway through a readout would not be. Only if no
-        # cloud credentials exist is there nothing to do but decline.
+        # Over the ceiling, decline (rc 3) and let the caller degrade to a
+        # summary read on-device — deliberately do NOT hand off to a cloud
+        # backend. Choosing the on-device backend is a choice the user made on
+        # purpose, and a registered cloud key does not override it: whoever
+        # wants a cloud voice selects it explicitly. So an over-length on-device
+        # readout stays on-device (the caller summarizes it and speaks the
+        # summary) rather than silently switching to a cloud voice not asked for.
         local max_chars="$(ondevice_max_chars)"
         if [ "${#text}" -gt "$max_chars" ]; then
-          # ElevenLabs first: side-by-side on the same Japanese text, Inworld
-          # mispronounced noticeably more (user's call, 2026-07-20).
-          #
-          # VOICE_READOUT_NO_CLOUD_FALLBACK is set by the cloud branches when
-          # they fail over to here, and blocks the return trip. Without it the
-          # two fallbacks feed each other: a cloud backend that errors (expired
-          # key, no network — seen live as an HTTP 401) falls back to ondevice,
-          # whose ceiling then routes the same over-length text straight back
-          # to the cloud backend that just failed, forever.
-          local alt=""
-          if [ -z "${VOICE_READOUT_NO_CLOUD_FALLBACK:-}" ]; then
-            if [ -n "$(get_elevenlabs_api_key)" ]; then alt=elevenlabs
-            elif [ -n "$(get_inworld_api_key)" ]; then alt=inworld
-            elif [ -n "$(get_gemini_api_key)" ]; then alt=gemini
-            fi
-          fi
-          if [ -n "$alt" ]; then
-            log fallback "text too long for ondevice (${#text} chars > ${max_chars}), using ${alt}"
-            VOICE_READOUT_TTS_BACKEND="$alt" speak "$text" "$cap" "$fn"
-            return $?
-          fi
-          log skip "text too long for ondevice (${#text} chars > ${max_chars}) and no cloud backend configured"
+          log skip "text too long for ondevice (${#text} chars > ${max_chars}), caller will summarize"
           return 3
         fi
 
