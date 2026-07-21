@@ -47,7 +47,15 @@ while [ "$tries" -lt "$MAX_TRIES" ]; do
   precleanup_stuck_tts
   if timeout 15 termux-tts-engines >/dev/null 2>&1; then
     log watcher "engine responding again after ${tries} probe(s)"
-    speak "読み上げ、直ったみたいよ。お待たせしちゃってごめんね"
+    # Prefer the pre-rendered recovery clip (nicer voice, no engine time) when
+    # the backend is on-device; otherwise announce live. speak() clears the ⚠️
+    # notifications on success, so when we play the clip in its place we call
+    # clear_failure_notifications() ourselves to keep that side effect.
+    if [ "$(get_tts_backend "")" = "ondevice" ] && play_notice_clip "$PLUGIN_ROOT_DIR/assets/recovery.wav"; then
+      clear_failure_notifications
+    else
+      speak "読み上げ、直ったみたいよ。お待たせしちゃってごめんね"
+    fi
     exit 0
   fi
 done
