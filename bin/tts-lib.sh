@@ -12,11 +12,39 @@
 # language-specific locale installed.
 export LC_ALL=C.utf8
 
+# The plugin's bundled files (e.g. pre-rendered audio under assets/) sit
+# relative to this library, not under CLAUDE_PLUGIN_DATA (the writable per-user
+# data dir). Resolved from BASH_SOURCE so it works however the caller was run.
+PLUGIN_ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)"
+NOTICE_CLIP="${PLUGIN_ROOT_DIR}/assets/overflow-notice.wav"
+
+# Persisted settings live here (written by bin/toggle.sh, seeded by
+# `toggle.sh init`). Defined up front because the tuning values below read from
+# it. A missing file or missing key falls through to a built-in default, so a
+# fresh install works with zero setup.
+CONFIG_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-config"
+
+# Resolve a tuning knob: an explicit env override (VOICE_READOUT_<KEY>) wins for
+# throwaway one-off runs, then the value stored in CONFIG_FILE (<KEY>=...), then
+# the built-in default. Keeps every tunable visible in one config file while
+# still honouring a one-off `VOICE_READOUT_X=… cmd` override.
+get_tuning() {
+  local key="$1" default="$2" env_name val
+  env_name="VOICE_READOUT_${key}"
+  val="${!env_name:-}"
+  if [ -n "$val" ]; then printf '%s' "$val"; return; fi
+  if [ -f "$CONFIG_FILE" ]; then
+    val="$(grep -E "^${key}=" "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2)"
+    [ -n "$val" ] && { printf '%s' "$val"; return; }
+  fi
+  printf '%s' "$default"
+}
+
 LOG_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout.log"
 # This file is appended to indefinitely across sessions with nothing else
 # trimming it, so self-rotate once it grows past a threshold instead of
 # growing forever.
-LOG_MAX_BYTES="${VOICE_READOUT_LOG_MAX_BYTES:-1048576}"
+LOG_MAX_BYTES="$(get_tuning LOG_MAX_BYTES 1048576)"
 log() {
   local size=0
   # Guarded on existence rather than relying on `2>/dev/null`: that silences
@@ -35,7 +63,7 @@ log() {
 # On/off toggles, controlled via bin/toggle.sh (invoked by asking Claude in
 # chat, e.g. "音声読み上げをオフにして"). Missing file or missing key means
 # enabled — the feature must work with zero setup on a fresh install.
-CONFIG_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-config"
+# (CONFIG_FILE itself is defined near the top, before the tuning helpers.)
 is_enabled() {
   local key="$1"
   [ -f "$CONFIG_FILE" ] || return 0
@@ -181,7 +209,7 @@ notify_failure() {
   # A stuck engine fails on every response, which used to fire one
   # notification per response. Suppress repeats within the cooldown window.
   local stamp_file="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-last-notify"
-  local cooldown="${VOICE_READOUT_NOTIFY_COOLDOWN:-1800}"
+  local cooldown="$(get_tuning NOTIFY_COOLDOWN 1800)"
   local now last
   now="$(date +%s)"
   last="$(cat "$stamp_file" 2>/dev/null || echo 0)"
@@ -249,13 +277,57 @@ ONDEVICE_LOCK_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-ondevice.lock"
 # callers that would rather shorten their text than be refused (the Stop
 # hook's summary path) can ask instead of hardcoding it.
 ondevice_max_chars() {
-  printf '%s' "${VOICE_READOUT_ONDEVICE_MAX_CHARS:-240}"
+  printf '%s' "$(get_tuning ONDEVICE_MAX_CHARS 240)"
 }
 
 # Spoken as a short preface when an over-length readout is degraded to a summary
 # (see the on-device ceiling in speak()). Lets a listener who asked for the full
 # text or a file know they are hearing a summary instead of the whole thing.
-READOUT_OVERFLOW_NOTICE="${VOICE_READOUT_OVERFLOW_NOTICE:-文字数が超過したため、要約でお伝えします。}"
+# Deliberately a fixed Japanese system message (no persona, no per-language
+# variants): Japanese is the most compact — the same wording in English runs
+# nearly twice the character count against the on-device ceiling — and the
+# summary that follows is always Japanese too, so the two stay consistent.
+READOUT_OVERFLOW_NOTICE="${VOICE_READOUT_OVERFLOW_NOTICE:-長文のため要約にします。}"
+
+# Play a pre-rendered fixed-phrase clip (a bundled .wav) through the phone
+# speaker, returning 0 if it played and 1 if the clip is unavailable so the
+# caller can fall back to live TTS of the phrase. These "決まり文句" are
+# rendered once with a good cloud voice and shipped in assets/, so they cost no
+# API call and no engine time at readout.
+#
+# Two constraints mirror speak_gemini(): termux-media-player is the only path to
+# the real speaker (no /dev/snd in this proot), and Termux:API can only open
+# files under $TERMUX_HOME/storage — the bundled asset lives on the proot side,
+# so copy it into the Termux scratch dir first. The stop switch is honoured up
+# front so a fixed cue can't slip through after the user has silenced readout.
+play_notice_clip() {
+  local clip="$1"
+  [ -e "$STOP_SWITCH_FILE" ] && return 0
+  [ -f "$clip" ] || return 1
+  command -v termux-media-player >/dev/null 2>&1 || return 1
+  local termux_home="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}"
+  local scratch_dir="$termux_home/.voice-readout-tmp"
+  mkdir -p "$scratch_dir" 2>/dev/null || return 1
+  local dest="$scratch_dir/$(basename "$clip")"
+  cp "$clip" "$dest" 2>/dev/null || return 1
+  if ! termux-media-player play "$dest" >/dev/null 2>&1; then
+    rm -f "$dest"
+    return 1
+  fi
+  # Fire-and-forget like speak_gemini's playback: poll until it stops so the
+  # summary that follows doesn't talk over the clip. Bounded so a stuck player
+  # can't hang the hook.
+  local waited=0
+  while [ "$waited" -lt 15 ]; do
+    sleep 1
+    waited=$(( waited + 1 ))
+    termux-media-player info 2>/dev/null | grep -q 'Status: Playing' || break
+  done
+  termux-media-player stop >/dev/null 2>&1
+  rm -f "$dest"
+  log spoke "notice clip ($(basename "$clip"), ${waited}s)"
+  return 0
+}
 
 # A libexec/termux-api TextToSpeech process still running past its own
 # recorded deadline is stuck (a healthy call always finishes within the
@@ -326,7 +398,7 @@ precleanup_stuck_tts() {
 engine_is_responsive() {
   # </dev/null: termux-* wrappers drain any stdin they inherit, which would
   # eat a caller's loop input (see the chunk-array comment in speak()).
-  if timeout "${VOICE_READOUT_PREFLIGHT_TIMEOUT:-10}" termux-tts-engines >/dev/null 2>&1 </dev/null; then
+  if timeout "$(get_tuning PREFLIGHT_TIMEOUT 10)" termux-tts-engines >/dev/null 2>&1 </dev/null; then
     return 0
   fi
   # timeout signals the sh wrapper; the libexec/termux-api grandchild it
@@ -775,7 +847,7 @@ speak() {
           return 0
         fi
 
-        local tts_args=(-r "${VOICE_READOUT_TTS_RATE:-1.3}" -p "${VOICE_READOUT_TTS_PITCH:-1.0}")
+        local tts_args=(-r "$(get_tuning TTS_RATE 1.3)" -p "$(get_tuning TTS_PITCH 1.0)")
         [ -n "${VOICE_READOUT_TTS_ENGINE:-}" ] && tts_args+=(-e "$VOICE_READOUT_TTS_ENGINE")
         [ -n "${VOICE_READOUT_TTS_LANG:-}" ] && tts_args+=(-l "$VOICE_READOUT_TTS_LANG")
         [ -n "${VOICE_READOUT_TTS_REGION:-}" ] && tts_args+=(-n "$VOICE_READOUT_TTS_REGION")
@@ -811,11 +883,11 @@ speak() {
         # above regardless of wake-locking, so speak it as several short
         # calls instead — each chunk gets its own timeout scaled the same way
         # the whole text used to.
-        local chunk_max="${VOICE_READOUT_TTS_CHUNK_CHARS:-100}"
-        local chunk_retries="${VOICE_READOUT_TTS_CHUNK_RETRIES:-4}"
+        local chunk_max="$(get_tuning TTS_CHUNK_CHARS 100)"
+        local chunk_retries="$(get_tuning TTS_CHUNK_RETRIES 4)"
         # Linear backoff between attempts: base, 2x base, 3x base, capped.
-        local retry_wait_base="${VOICE_READOUT_TTS_RETRY_WAIT_BASE:-20}"
-        local retry_wait_max="${VOICE_READOUT_TTS_RETRY_WAIT:-90}"
+        local retry_wait_base="$(get_tuning TTS_RETRY_WAIT_BASE 20)"
+        local retry_wait_max="$(get_tuning TTS_RETRY_WAIT 90)"
         # Collect every chunk up front rather than streaming them into a
         # `while read` loop. termux-tts-speak / termux-tts-engines drain
         # whatever stdin they inherit (verified 2026-07-20: a 7-item loop ran

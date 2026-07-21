@@ -52,9 +52,16 @@ if [ "$rc" -eq 3 ]; then
   export VOICE_READOUT_GUARD=1
   SUMMARY="$(printf '%s' "$TEXT" | claude --safe-mode -p --model haiku '以下の文章の内容を、短く日本語で要約してください。要約文だけを出力し、前置きや説明は付けないでください。' 2>/dev/null)"
   [ -n "$SUMMARY" ] || SUMMARY="${TEXT:0:120}"
-  COMBINED="${READOUT_OVERFLOW_NOTICE}${SUMMARY}"
   MAX="$(ondevice_max_chars)"
-  [ "${#COMBINED}" -gt "$MAX" ] && COMBINED="${COMBINED:0:$MAX}"
-  speak "$COMBINED" 90 file
+  # Announce via the pre-rendered notice clip if present, else prepend the
+  # spoken notice text to the summary.
+  if play_notice_clip "$NOTICE_CLIP"; then
+    [ "${#SUMMARY}" -gt "$MAX" ] && SUMMARY="${SUMMARY:0:$MAX}"
+    speak "$SUMMARY" 90 file
+  else
+    COMBINED="${READOUT_OVERFLOW_NOTICE}${SUMMARY}"
+    [ "${#COMBINED}" -gt "$MAX" ] && COMBINED="${COMBINED:0:$MAX}"
+    speak "$COMBINED" 90 file
+  fi
 fi
 exit 0

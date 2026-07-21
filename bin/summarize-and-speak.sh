@@ -116,10 +116,10 @@ fi
 # was itself refused, so the hook spoke nothing). Trim to fit rather than
 # lose the readout entirely. Character-safe: tts-lib.sh exports a UTF-8
 # locale, so this slices by character, not byte.
-# When we degraded here from an over-length full readout, tell the listener the
-# text was shortened. Prepended before the trim so the notice can't be the part
-# that gets cut.
-if [ -n "${OVERFLOW:-}" ]; then
+# When we degraded here from an over-length full readout, announce it: play the
+# pre-rendered notice clip if it's available, otherwise prepend the spoken
+# notice text (before the trim, so the notice can't be the part that gets cut).
+if [ -n "${OVERFLOW:-}" ] && ! play_notice_clip "$NOTICE_CLIP"; then
   SUMMARY="${READOUT_OVERFLOW_NOTICE}${SUMMARY}"
 fi
 

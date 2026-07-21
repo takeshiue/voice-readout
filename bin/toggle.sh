@@ -7,6 +7,7 @@
 #        toggle.sh persona <on|off>
 #        toggle.sh backend <ondevice|gemini|inworld|elevenlabs>
 #        toggle.sh backend-<notification|summary|full|file> <ondevice|gemini|inworld|elevenlabs>
+#        toggle.sh tune <KEY> <VALUE>
 #        toggle.sh init
 #        toggle.sh gemini-key <API_KEY|clear>
 #        toggle.sh inworld-key <API_KEY|clear>
@@ -30,6 +31,11 @@
 #                gemini     = Gemini API TTS (needs network + gemini-key set)
 #                inworld    = Inworld Realtime TTS-1.5 Mini (needs network + inworld-key set)
 #                elevenlabs = ElevenLabs eleven_flash_v2_5 (needs network + elevenlabs-key set)
+#   tune         set a numeric/scalar tuning value in the config file (the
+#                knobs that used to be environment-variable-only). Valid keys:
+#                ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES
+#                TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT
+#                WATCH_INTERVAL LOG_MAX_BYTES TTS_RATE TTS_PITCH NOTIFY_COOLDOWN
 #   gemini-key      sets/clears the Gemini API key used by the gemini backend
 #   inworld-key     sets/clears the Inworld API key used by the inworld backend
 #   elevenlabs-key  sets/clears the ElevenLabs API key used by the elevenlabs backend
@@ -47,6 +53,7 @@ usage() {
   echo "       $0 persona <on|off>" >&2
   echo "       $0 backend <ondevice|gemini|inworld|elevenlabs>" >&2
   echo "       $0 backend-<notification|summary|full|file> <ondevice|gemini|inworld|elevenlabs>" >&2
+  echo "       $0 tune <KEY> <VALUE>" >&2
   echo "       $0 gemini-key <API_KEY|clear>" >&2
   echo "       $0 inworld-key <API_KEY|clear>" >&2
   echo "       $0 elevenlabs-key <API_KEY|clear>" >&2
@@ -56,6 +63,13 @@ usage() {
 # `init` is the one subcommand that takes no second argument.
 if [ "${1:-}" = "init" ]; then
   TARGET=init
+  STATE=""
+elif [ "${1:-}" = "tune" ]; then
+  # tune takes two arguments (KEY VALUE), unlike every other subcommand.
+  [ $# -eq 3 ] || usage
+  TARGET=tune
+  TUNE_KEY="$2"
+  TUNE_VAL="$3"
   STATE=""
 else
   [ $# -eq 2 ] || usage
@@ -118,6 +132,21 @@ case "$TARGET" in
     add_default TTS_BACKEND_SUMMARY ondevice
     add_default TTS_BACKEND_FULL ondevice
     add_default TTS_BACKEND_FILE ondevice
+    # Tuning knobs — every value that used to be environment-variable-only, kept
+    # here so the whole configuration is visible and editable in one place.
+    # Change with `toggle.sh tune <KEY> <VALUE>` or by editing this file; a
+    # VOICE_READOUT_<KEY> env var still overrides for a one-off run.
+    add_default ONDEVICE_MAX_CHARS 240
+    add_default TTS_CHUNK_CHARS 100
+    add_default TTS_CHUNK_RETRIES 4
+    add_default TTS_RETRY_WAIT_BASE 20
+    add_default TTS_RETRY_WAIT 90
+    add_default PREFLIGHT_TIMEOUT 10
+    add_default WATCH_INTERVAL 120
+    add_default LOG_MAX_BYTES 1048576
+    add_default TTS_RATE 1.3
+    add_default TTS_PITCH 1.0
+    add_default NOTIFY_COOLDOWN 1800
     echo "voice-readout: config initialised at $CONFIG_FILE"
     cat "$CONFIG_FILE"
     exit 0
@@ -201,6 +230,20 @@ case "$TARGET" in
       set_env_key ELEVENLABS_API_KEY "$STATE"
       echo "voice-readout: elevenlabs-key -> saved (${#STATE} chars) in $ENV_FILE"
     fi
+    exit 0
+    ;;
+  tune)
+    case "$TUNE_KEY" in
+      ONDEVICE_MAX_CHARS|TTS_CHUNK_CHARS|TTS_CHUNK_RETRIES|TTS_RETRY_WAIT_BASE|TTS_RETRY_WAIT|PREFLIGHT_TIMEOUT|WATCH_INTERVAL|LOG_MAX_BYTES|TTS_RATE|TTS_PITCH|NOTIFY_COOLDOWN) ;;
+      *)
+        echo "unknown tuning key: $TUNE_KEY" >&2
+        echo "valid keys: ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT WATCH_INTERVAL LOG_MAX_BYTES TTS_RATE TTS_PITCH NOTIFY_COOLDOWN" >&2
+        exit 1
+        ;;
+    esac
+    set_key "$TUNE_KEY" "$TUNE_VAL"
+    echo "voice-readout: ${TUNE_KEY} -> ${TUNE_VAL}"
+    cat "$CONFIG_FILE"
     exit 0
     ;;
   *) usage ;;
