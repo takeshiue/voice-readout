@@ -1,0 +1,9 @@
+# Keep shell scripts LF on every platform. Git for Windows otherwise checks
+# them out as CRLF, and bash/Git Bash then fails on the stray \r (scripts abort
+# with "command not found" / bad interpreter). This is the key enabler for the
+# Windows checkout of this plugin.
+* text=auto eol=lf
+*.sh text eol=lf
+
+# Pre-rendered audio clips are binary; never touch their bytes.
+*.wav binary

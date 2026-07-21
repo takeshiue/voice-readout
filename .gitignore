@@ -1,0 +1,19 @@
+# Plugin runtime state and secrets normally live OUTSIDE the repo, under
+# $CLAUDE_PLUGIN_DATA. These patterns are a defensive net in case that path
+# ever resolves into the repo (e.g. its /tmp fallback) so keys/logs never get
+# committed.
+voice-readout-config
+voice-readout-persona.md
+voice-readout.env
+voice-readout-*-key
+voice-readout.log
+voice-readout-last-notify
+voice-readout-ondevice.lock
+.voice-readout-tmp/
+*.log
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~
