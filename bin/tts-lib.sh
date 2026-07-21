@@ -746,6 +746,60 @@ speak_elevenlabs() {
   return 0
 }
 
+# Windows on-device TTS via the built-in SAPI voice, reached from Git Bash by
+# shelling out to PowerShell. This is the Windows counterpart to the
+# termux-tts-speak path: no API key, no network, offline. It is only ever
+# reached when termux-tts-speak is absent (see speak()'s ondevice branch), so it
+# never runs on the phone. Returns non-zero when there is no PowerShell to call,
+# which is how a genuinely unsupported host falls through to a real error.
+speak_windows_sapi() {
+  local text="$1"
+  local ps
+  # powershell.exe is the real Windows shell as seen from Git Bash; plain
+  # "powershell" is a fallback for setups that alias it.
+  if command -v powershell.exe >/dev/null 2>&1; then
+    ps=powershell.exe
+  elif command -v powershell >/dev/null 2>&1; then
+    ps=powershell
+  else
+    return 1
+  fi
+
+  # Hand the text over as a UTF-8 file rather than as a command-line argument:
+  # embedding Japanese (and quotes/newlines) directly in `powershell -Command`
+  # mangles both the encoding (PS 5.1 is not UTF-8 by default) and the quoting.
+  # PowerShell reads it back with an explicit UTF-8 decode.
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/voice-readout-sapi.XXXXXX")" || return 1
+  printf '%s' "$text" > "$tmp"
+
+  # PowerShell (a Windows process) cannot open Git Bash's /tmp path; cygpath -w
+  # turns it into the C:\... form Windows understands.
+  local winpath="$tmp"
+  command -v cygpath >/dev/null 2>&1 && winpath="$(cygpath -w "$tmp")"
+
+  # Map the on-device rate multiplier (1.0 = normal, config default 1.3) onto
+  # SAPI's -10..10 scale, clamped.
+  local rate sapi_rate
+  rate="$(get_tuning TTS_RATE 1.3)"
+  sapi_rate="$(awk -v r="$rate" 'BEGIN{v=int((r-1)*10+0.5); if(v>10)v=10; if(v<-10)v=-10; print v}')"
+
+  "$ps" -NoProfile -Command \
+    "Add-Type -AssemblyName System.Speech; \
+     \$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; \
+     \$s.Rate = $sapi_rate; \
+     \$s.Speak([System.IO.File]::ReadAllText('$winpath', [System.Text.Encoding]::UTF8))"
+  local rc=$?
+
+  rm -f "$tmp" 2>/dev/null
+  if [ "$rc" -eq 0 ]; then
+    log spoke "windows-sapi (rate ${sapi_rate})"
+    return 0
+  fi
+  log error "windows-sapi failed (exit $rc)"
+  return 1
+}
+
 # Fixed absolute path on purpose — see bin/readout-switch.sh. Every other path
 # in this file is built from CLAUDE_PLUGIN_DATA; this one must not be, because
 # redirecting that variable is precisely how the ordinary toggles get
@@ -1006,8 +1060,13 @@ speak() {
           start_recovery_watcher
         fi
         command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock 2>/dev/null
+      elif speak_windows_sapi "$text"; then
+        # Not on the phone: fall back to the host's built-in on-device voice.
+        # None of the Termux length-ceiling / chunking / wedge-recovery above
+        # applies — that machinery exists solely for the Termux:API engine bug.
+        clear_failure_notifications
       else
-        log error "termux-tts-speak not found"
+        log error "no on-device TTS available (need termux-tts-speak, or PowerShell/SAPI on Windows)"
       fi
       ;;
     *)
