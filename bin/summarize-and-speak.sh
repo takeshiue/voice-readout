@@ -70,6 +70,16 @@ if [ "$READOUT_MODE" = "full" ]; then
   # itself as a summary so the listener knows the full text was shortened.
   log fallback "full readout too long for ondevice, degrading to summary"
   OVERFLOW=1
+  # Announce the shortening NOW, before the ~10s+ summarizer call below — the
+  # length check that got us here is instant, so there is no reason to make the
+  # listener sit in silence during summarization wondering if it died. The
+  # notice is a pre-rendered clip played through the media player (independent
+  # of the TTS engine), so it fires immediately and cannot collide with the
+  # summary readout that follows. If the clip is unavailable we fall back to
+  # prepending the spoken notice text to the summary further down.
+  if play_notice_clip "$NOTICE_CLIP"; then
+    OVERFLOW_ANNOUNCED=1
+  fi
 fi
 
 # First-person framing matters: summarizing "the assistant's response" from
@@ -116,10 +126,11 @@ fi
 # was itself refused, so the hook spoke nothing). Trim to fit rather than
 # lose the readout entirely. Character-safe: tts-lib.sh exports a UTF-8
 # locale, so this slices by character, not byte.
-# When we degraded here from an over-length full readout, announce it: play the
-# pre-rendered notice clip if it's available, otherwise prepend the spoken
-# notice text (before the trim, so the notice can't be the part that gets cut).
-if [ -n "${OVERFLOW:-}" ] && ! play_notice_clip "$NOTICE_CLIP"; then
+# We already announced the overflow up front by playing the notice clip (see
+# the OVERFLOW block above). Only if that clip was unavailable do we fall back
+# to prepending the spoken notice text here — before the trim, so the notice
+# can't be the part that gets cut.
+if [ -n "${OVERFLOW:-}" ] && [ -z "${OVERFLOW_ANNOUNCED:-}" ]; then
   SUMMARY="${READOUT_OVERFLOW_NOTICE}${SUMMARY}"
 fi
 
