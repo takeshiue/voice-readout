@@ -52,6 +52,12 @@ fi
 
 READOUT_MODE="$(get_readout_mode)"
 
+# Summary-prompt components live here (above the full-mode block) because the
+# experimental overflow pipeline inside that block also summarizes and needs
+# them; the normal summarizer path further down uses the same two constants.
+BASE_PROMPT_PREFIX='以下はあなた自身がたった今チャットで送った応答です。その内容を、送った本人として相手に直接話しかける一文に要約してください。短く、自然な話し言葉にしてください。「〜とのことです」「〜ということですね」のような伝聞・第三者的な言い回しや、堅い敬語は使わないでください。'
+BASE_PROMPT_SUFFIX='コード・記号・URL・ファイルパスは含めないでください。要約文だけを出力し、前置きや説明は付けないでください。'
+
 if [ "$READOUT_MODE" = "full" ]; then
   # Full mode: read the cleaned text verbatim, no summarization. Requested
   # because one-sentence summaries lose too much for the listener to follow.
@@ -70,6 +76,61 @@ if [ "$READOUT_MODE" = "full" ]; then
   # itself as a summary so the listener knows the full text was shortened.
   log fallback "full readout too long for ondevice, degrading to summary"
   OVERFLOW=1
+
+  # ---- Experimental overflow pipeline (toggle OVERFLOW_PIPELINE, default off) --
+  # Hide the summarizer latency behind the opening. Read the first ~N characters
+  # verbatim immediately (no LLM, so it starts speaking at once), summarize the
+  # WHOLE response with Haiku in the BACKGROUND meanwhile, bridge with a short
+  # spoken notice, then read the finished summary. The three TTS calls run one
+  # after another (no engine collision); only the non-engine `claude` summarizer
+  # runs in parallel, and speaking the opening warms the engine so the bridge and
+  # summary skip the preflight probe. Self-contained + toggle-guarded so the
+  # whole feature is trivially revertible: delete this block, the toggle verb,
+  # the two config defaults, and the bridge string.
+  if [ "$(get_tuning OVERFLOW_PIPELINE off)" = "on" ]; then
+    log fallback "overflow pipeline: opening now, summarizing whole response in background"
+    PIPE_PROMPT="${BASE_PROMPT_PREFIX} $(get_persona_style) ${BASE_PROMPT_SUFFIX}"
+    PIPE_TMP="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/vr-pipe-$$")"
+    ( printf '%s' "$CLEANED_TRIMMED" | claude --safe-mode -p --model haiku "$PIPE_PROMPT" > "$PIPE_TMP" 2>/dev/null ) &
+    PIPE_PID=$!
+
+    # Opening: first N chars, backed off to the last sentence/clause boundary
+    # (。！？、) inside the window so it never stops mid-word. Character-safe
+    # because tts-lib.sh exports a UTF-8 locale. N is configurable.
+    PIPE_OPEN_MAX="$(get_tuning OVERFLOW_OPENING_CHARS 80)"
+    PIPE_OPENING="${CLEANED_TRIMMED:0:$PIPE_OPEN_MAX}"
+    PIPE_CUT="$(printf '%s' "$PIPE_OPENING" | sed -E 's/(.*[。！？、]).*/\1/')"
+    [ -n "$PIPE_CUT" ] && PIPE_OPENING="$PIPE_CUT"
+    log full "pipeline opening (${#PIPE_OPENING} chars): ${PIPE_OPENING:0:40}..."
+    speak "$PIPE_OPENING" 120 full
+
+    # Bridge so the listener knows an overall summary follows the opening.
+    speak "$OVERFLOW_PIPELINE_BRIDGE" 90 summary
+
+    # Join the background summary (usually already done during the opening read).
+    wait "$PIPE_PID" 2>/dev/null
+    SUMMARY="$(cat "$PIPE_TMP" 2>/dev/null)"
+    rm -f "$PIPE_TMP" 2>/dev/null
+
+    # Same refusal guard + empty fallback + on-device ceiling trim as the normal
+    # summarizer path below (kept in sync deliberately).
+    case "$SUMMARY" in
+      *申し訳ありませんが*|*ロールプレイ*|*応答はできません*|*お応えできません*|*"I can't"*|*"I cannot"*)
+        log fallback "summarizer refused style, using cleaned text"
+        SUMMARY="" ;;
+    esac
+    [ -z "$SUMMARY" ] && SUMMARY="${CLEANED_TRIMMED:0:120}"
+    PIPE_SMAX="$(ondevice_max_chars)"
+    if [ "$(get_tts_backend summary)" = "ondevice" ] && [ "${#SUMMARY}" -gt "$PIPE_SMAX" ]; then
+      log fallback "summary ${#SUMMARY} chars exceeds ondevice ceiling, trimming to ${PIPE_SMAX}"
+      SUMMARY="${SUMMARY:0:$PIPE_SMAX}"
+    fi
+    log summary "$SUMMARY"
+    speak "$SUMMARY" 90 summary
+    exit 0
+  fi
+  # ---- end experimental overflow pipeline -------------------------------------
+
   # Announce the shortening NOW, before the ~10s+ summarizer call below — the
   # length check that got us here is instant, so there is no reason to make the
   # listener sit in silence during summarization wondering if it died. The
@@ -89,9 +150,8 @@ fi
 # optional and lives outside this script — read PERSONA_FILE via tts-lib.sh.
 # Tone note: pushing a persona's framing too far (e.g. 恋人に囁く…) can make
 # Haiku refuse, and the refusal text itself would get read aloud — see the
-# fallback check below.
-BASE_PROMPT_PREFIX='以下はあなた自身がたった今チャットで送った応答です。その内容を、送った本人として相手に直接話しかける一文に要約してください。短く、自然な話し言葉にしてください。「〜とのことです」「〜ということですね」のような伝聞・第三者的な言い回しや、堅い敬語は使わないでください。'
-BASE_PROMPT_SUFFIX='コード・記号・URL・ファイルパスは含めないでください。要約文だけを出力し、前置きや説明は付けないでください。'
+# fallback check below. BASE_PROMPT_PREFIX / BASE_PROMPT_SUFFIX are defined
+# above the full-mode block (the overflow pipeline needs them too).
 PERSONA_STYLE="$(get_persona_style)"
 SUMMARY_PROMPT="${BASE_PROMPT_PREFIX} ${PERSONA_STYLE} ${BASE_PROMPT_SUFFIX}"
 

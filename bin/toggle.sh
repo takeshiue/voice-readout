@@ -2,7 +2,7 @@
 # Flips a voice-readout setting. Meant to be run by Claude when the user asks
 # in chat ("音声読み上げをオフにして" / "フル読み上げにして" etc).
 #
-# Usage: toggle.sh <stop|notification|all|greeting|farewell> <on|off>
+# Usage: toggle.sh <stop|notification|all|greeting|farewell|overflow-pipeline> <on|off>
 #        toggle.sh mode <summary|full>
 #        toggle.sh persona <on|off>
 #        toggle.sh backend <ondevice|gemini|inworld|elevenlabs>
@@ -55,7 +55,7 @@ PERSONA_PRESET="$PLUGIN_DIR/personas/persona.md"
 ENV_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout.env"
 
 usage() {
-  echo "Usage: $0 <stop|notification|all|greeting|farewell> <on|off>" >&2
+  echo "Usage: $0 <stop|notification|all|greeting|farewell|overflow-pipeline> <on|off>" >&2
   echo "       $0 mode <summary|full>" >&2
   echo "       $0 persona <on|off>" >&2
   echo "       $0 backend <ondevice|gemini|inworld|elevenlabs>" >&2
@@ -157,6 +157,8 @@ case "$TARGET" in
     add_default TTS_RETRY_WAIT 90
     add_default PREFLIGHT_TIMEOUT 10
     add_default WARM_SKIP_WINDOW 120
+    add_default OVERFLOW_PIPELINE off
+    add_default OVERFLOW_OPENING_CHARS 80
     add_default WATCH_INTERVAL 120
     add_default LOG_MAX_BYTES 1048576
     add_default TTS_RATE 1.3
@@ -166,7 +168,7 @@ case "$TARGET" in
     cat "$CONFIG_FILE"
     exit 0
     ;;
-  stop|notification|all|greeting|farewell)
+  stop|notification|all|greeting|farewell|overflow-pipeline)
     case "$STATE" in on|off) ;; *) usage ;; esac
     case "$TARGET" in
       stop) set_key STOP_READOUT "$STATE" ;;
@@ -175,6 +177,9 @@ case "$TARGET" in
       # cues, so turning off the two readouts does not silence them (or v.v.).
       greeting) set_key STARTUP_GREETING "$STATE" ;;
       farewell) set_key SESSION_END_GREETING "$STATE" ;;
+      # Experimental: read the opening verbatim while summarizing in the
+      # background, so a long readout starts immediately. Default off.
+      overflow-pipeline) set_key OVERFLOW_PIPELINE "$STATE" ;;
       all)
         set_key STOP_READOUT "$STATE"
         set_key NOTIFICATION_READOUT "$STATE"
@@ -257,10 +262,10 @@ case "$TARGET" in
       # numeric. set_key's sed substitution can't carry a '/' in the value, so
       # keep the greeting text slash-free (edit the config file directly for
       # anything unusual).
-      ONDEVICE_MAX_CHARS|TTS_CHUNK_CHARS|TTS_CHUNK_RETRIES|TTS_RETRY_WAIT_BASE|TTS_RETRY_WAIT|PREFLIGHT_TIMEOUT|WARM_SKIP_WINDOW|WATCH_INTERVAL|LOG_MAX_BYTES|TTS_RATE|TTS_PITCH|NOTIFY_COOLDOWN|STARTUP_GREETING_TEXT) ;;
+      ONDEVICE_MAX_CHARS|TTS_CHUNK_CHARS|TTS_CHUNK_RETRIES|TTS_RETRY_WAIT_BASE|TTS_RETRY_WAIT|PREFLIGHT_TIMEOUT|WARM_SKIP_WINDOW|OVERFLOW_OPENING_CHARS|WATCH_INTERVAL|LOG_MAX_BYTES|TTS_RATE|TTS_PITCH|NOTIFY_COOLDOWN|STARTUP_GREETING_TEXT) ;;
       *)
         echo "unknown tuning key: $TUNE_KEY" >&2
-        echo "valid keys: ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT WARM_SKIP_WINDOW WATCH_INTERVAL LOG_MAX_BYTES TTS_RATE TTS_PITCH NOTIFY_COOLDOWN STARTUP_GREETING_TEXT" >&2
+        echo "valid keys: ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT WARM_SKIP_WINDOW OVERFLOW_OPENING_CHARS WATCH_INTERVAL LOG_MAX_BYTES TTS_RATE TTS_PITCH NOTIFY_COOLDOWN STARTUP_GREETING_TEXT" >&2
         exit 1
         ;;
     esac
