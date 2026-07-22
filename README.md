@@ -12,6 +12,45 @@ Claude Code のやり取りを、画面を見なくても声で追えるよう�
 - **ストップスイッチ（Claude を介さず自分で止められる）**：読み上げが暴走したときや、とにかく黙らせたいときのために、Claude や設定・環境変数を一切経由せずに全読み上げを黙らせる独立スイッチがある。スマホの通知に常駐する［停止］／［再開］ボタンで切り替えられ、読み上げの最中でも次のチャンクの直前で効く。詳細は「ストップスイッチ」の節を参照。
 - **読み上げエンジンの切替（オプション）**：デフォルトは「オンデバイス」（Android 標準の TTS を Termux:API 経由で使う、完全オフライン）。Gemini API の TTS、Inworld の Realtime TTS-1.5 Mini、ElevenLabs のいずれかにも切り替えられる。ネットワークが必要になる代わりに、より自然で表情豊かな音声にできる可能性がある。切り替えは**機能ごとに独立して指定できる**（通知・要約・フル・ファイル読み上げの4機能。既定は4つとも「オンデバイス」）。詳細は「読み上げエンジン（バックエンド）の仕組み」の節を参照。
 
+## 動作環境（構成）
+
+このプラグインは、**Android スマホの上に3層を重ねた環境**で動かすことを想定している。
+
+```
+Android スマホ
+└─ Termux（アプリ）                     … termux-tts-speak / termux-notification /
+   │                                       termux-media-player を提供（Termux:API 経由で
+   │                                       Android の音声合成・通知に橋渡し）
+   └─ proot-distro の Ubuntu            … apt が使える普通の Linux。ここに Claude Code と
+      │                                    このプラグインが入っている
+      └─ Claude Code                    … 実際に対話しているもの。Stop / Notification
+                                           フックからこのプラグインの読み上げが動く
+```
+
+ポイントは、**Claude Code は「Termux そのもの」ではなく、Termux の中で proot-distro で起動した Ubuntu の中で動いている**こと。読み上げの実体である `termux-tts-speak` などは Termux 側のコマンドなので、**Ubuntu(proot) の `PATH` に Termux の `bin` ディレクトリ（`/data/data/com.termux/files/usr/bin`）を通しておく**ことでフック（proot 側で実行される）から呼べるようにしている。この橋渡しが構成の要。
+
+そのため、必要なものが**どちらの層に要るか**が分かれる：
+
+| 層 | 入れるもの | 入れ方 |
+|---|---|---|
+| Android / Termux | Termux 本体、**Termux:API アプリ**、`termux-api` パッケージ | Play ストア等＋ `pkg install termux-api` |
+| Ubuntu (proot) | Claude Code、このプラグイン、`jq` | Claude Code のインストール手順＋ `apt install jq` |
+
+> `jq`（JSON パース用）はフックが proot 側で使うので **Ubuntu 側に `apt install jq`**。Termux 側ではない点に注意。
+
+### 起動と利用の流れ
+
+1. Termux を開く
+2. proot-distro で Ubuntu に入る（例：`proot-distro login ubuntu`）
+3. Ubuntu の中で Termux の bin に PATH を通す（`.bashrc` 等に入れておくと毎回不要）：
+   ```sh
+   export PATH="$PATH:/data/data/com.termux/files/usr/bin"
+   ```
+4. `claude` で Claude Code を起動する
+5. あとは普通に会話するだけ。Claude の応答が終わるたびに声で読み上げ、許可確認・入力待ちも声で知らせる（追加設定なしで動く）
+
+読み上げのオン/オフやモード切替は、すべてチャットで「〜して」と頼むだけ（「使えるオプション」節を参照）。
+
 ## Termux:API との関係
 
 読み上げの実体は `termux-tts-speak` コマンドで、これは **Termux:API** という別アプリ（`com.termux.api`）が仲介して Android 標準の音声合成機能を呼び出す仕組みになっている。関係を図にすると：
@@ -38,12 +77,19 @@ Google 音声認識と音声合成サービス（実際に声を合成するエ�
 
 ## インストール方法
 
-前提として、スマートフォン（Termux）側に以下が入っている必要がある：
+前提として、以下が入っている必要がある（どちらの層に入れるかは「動作環境（構成）」節も参照）：
+
+**Android / Termux 側**
 
 - **Termux**（本体）
-- **Termux:API アプリ**（Play ストア等からインストール。上記の仲介役）
-- Termux 側に `termux-api` パッケージ（`pkg install termux-api` 等）
-- `jq`（JSON パース用。`pkg install jq`）
+- **Termux:API アプリ**（Play ストア等からインストール。Android の音声合成・通知への仲介役）
+- `termux-api` パッケージ（`pkg install termux-api`。`termux-tts-speak` 等を提供）
+
+**Ubuntu (proot) 側**（Claude Code が動く層）
+
+- **Claude Code**
+- `jq`（JSON パース用。フックが proot 側で使う。`apt install jq`）
+- Termux の bin に PATH が通っていること（`export PATH="$PATH:/data/data/com.termux/files/usr/bin"`）
 
 プラグイン自体はこのリポジトリ（`voice-readout` マーケットプレイス）経由で有効化する。`~/.claude/settings.json` の `enabledPlugins` に以下が入っていれば有効：
 
