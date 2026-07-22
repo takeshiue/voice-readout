@@ -2,7 +2,7 @@
 # Flips a voice-readout setting. Meant to be run by Claude when the user asks
 # in chat ("音声読み上げをオフにして" / "フル読み上げにして" etc).
 #
-# Usage: toggle.sh <stop|notification|all> <on|off>
+# Usage: toggle.sh <stop|notification|all|greeting> <on|off>
 #        toggle.sh mode <summary|full>
 #        toggle.sh persona <on|off>
 #        toggle.sh backend <ondevice|gemini|inworld|elevenlabs>
@@ -14,7 +14,9 @@
 #        toggle.sh elevenlabs-key <API_KEY|clear>
 #   stop         Stop-hook readout (summarizes/reads the final response)
 #   notification Notification-hook readout (permission/idle prompts)
-#   all          stop + notification together
+#   all          stop + notification together (not greeting — that is separate)
+#   greeting     SessionStart greeting, spoken once at launch/resume so you can
+#                hear whether the readout path works. Text: tune STARTUP_GREETING_TEXT
 #   mode         summary = one-sentence Haiku summary (default)
 #                full    = verbatim readout of the response (minus code/URLs)
 #   persona      on  = apply the tone preset in personas/persona.md
@@ -36,6 +38,7 @@
 #                ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES
 #                TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT
 #                WATCH_INTERVAL LOG_MAX_BYTES TTS_RATE TTS_PITCH NOTIFY_COOLDOWN
+#                STARTUP_GREETING_TEXT (the session-start greeting text)
 #   gemini-key      sets/clears the Gemini API key used by the gemini backend
 #   inworld-key     sets/clears the Inworld API key used by the inworld backend
 #   elevenlabs-key  sets/clears the ElevenLabs API key used by the elevenlabs backend
@@ -48,7 +51,7 @@ PERSONA_PRESET="$PLUGIN_DIR/personas/persona.md"
 ENV_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout.env"
 
 usage() {
-  echo "Usage: $0 <stop|notification|all> <on|off>" >&2
+  echo "Usage: $0 <stop|notification|all|greeting> <on|off>" >&2
   echo "       $0 mode <summary|full>" >&2
   echo "       $0 persona <on|off>" >&2
   echo "       $0 backend <ondevice|gemini|inworld|elevenlabs>" >&2
@@ -125,6 +128,10 @@ case "$TARGET" in
     add_default STOP_READOUT on
     add_default NOTIFICATION_READOUT on
     add_default READOUT_MODE summary
+    # Spoken once at session start (SessionStart hook) so the user can hear
+    # immediately whether the readout path works. Text is configurable.
+    add_default STARTUP_GREETING on
+    add_default STARTUP_GREETING_TEXT voice-readout、準備できたよ
     # One engine per function, each the user's own choice. All default to
     # ondevice: no API key, no network, speaks immediately.
     add_default TTS_BACKEND ondevice
@@ -151,11 +158,14 @@ case "$TARGET" in
     cat "$CONFIG_FILE"
     exit 0
     ;;
-  stop|notification|all)
+  stop|notification|all|greeting)
     case "$STATE" in on|off) ;; *) usage ;; esac
     case "$TARGET" in
       stop) set_key STOP_READOUT "$STATE" ;;
       notification) set_key NOTIFICATION_READOUT "$STATE" ;;
+      # Independent of "all": the startup greeting is a separate cue, so
+      # turning off the two readouts does not silence it (and vice versa).
+      greeting) set_key STARTUP_GREETING "$STATE" ;;
       all)
         set_key STOP_READOUT "$STATE"
         set_key NOTIFICATION_READOUT "$STATE"
@@ -234,10 +244,14 @@ case "$TARGET" in
     ;;
   tune)
     case "$TUNE_KEY" in
-      ONDEVICE_MAX_CHARS|TTS_CHUNK_CHARS|TTS_CHUNK_RETRIES|TTS_RETRY_WAIT_BASE|TTS_RETRY_WAIT|PREFLIGHT_TIMEOUT|WATCH_INTERVAL|LOG_MAX_BYTES|TTS_RATE|TTS_PITCH|NOTIFY_COOLDOWN) ;;
+      # STARTUP_GREETING_TEXT is the one free-text key here; the rest are
+      # numeric. set_key's sed substitution can't carry a '/' in the value, so
+      # keep the greeting text slash-free (edit the config file directly for
+      # anything unusual).
+      ONDEVICE_MAX_CHARS|TTS_CHUNK_CHARS|TTS_CHUNK_RETRIES|TTS_RETRY_WAIT_BASE|TTS_RETRY_WAIT|PREFLIGHT_TIMEOUT|WATCH_INTERVAL|LOG_MAX_BYTES|TTS_RATE|TTS_PITCH|NOTIFY_COOLDOWN|STARTUP_GREETING_TEXT) ;;
       *)
         echo "unknown tuning key: $TUNE_KEY" >&2
-        echo "valid keys: ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT WATCH_INTERVAL LOG_MAX_BYTES TTS_RATE TTS_PITCH NOTIFY_COOLDOWN" >&2
+        echo "valid keys: ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT WATCH_INTERVAL LOG_MAX_BYTES TTS_RATE TTS_PITCH NOTIFY_COOLDOWN STARTUP_GREETING_TEXT" >&2
         exit 1
         ;;
     esac
