@@ -91,24 +91,40 @@ if [ "$READOUT_MODE" = "full" ]; then
     log fallback "overflow pipeline: opening now, summarizing whole response in background"
     PIPE_PROMPT="${BASE_PROMPT_PREFIX} $(get_persona_style) ${BASE_PROMPT_SUFFIX}"
     PIPE_TMP="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/vr-pipe-$$")"
+    PIPE_T0="$(date +%s)"
     ( printf '%s' "$CLEANED_TRIMMED" | claude --safe-mode -p --model haiku "$PIPE_PROMPT" > "$PIPE_TMP" 2>/dev/null ) &
     PIPE_PID=$!
 
     # Opening: first N chars, backed off to the last sentence/clause boundary
     # (。！？、) inside the window so it never stops mid-word. Character-safe
-    # because tts-lib.sh exports a UTF-8 locale. N is configurable.
-    PIPE_OPEN_MAX="$(get_tuning OVERFLOW_OPENING_CHARS 80)"
+    # because tts-lib.sh exports a UTF-8 locale. N is configurable — it has to be
+    # long enough to cover the background summarizer (measured ~30s for the
+    # `claude -p` cold start), because the bridge is now a ~3s clip rather than a
+    # ~12s TTS phrase and so hides much less of that wait on its own.
+    PIPE_OPEN_MAX="$(get_tuning OVERFLOW_OPENING_CHARS 150)"
     PIPE_OPENING="${CLEANED_TRIMMED:0:$PIPE_OPEN_MAX}"
     PIPE_CUT="$(printf '%s' "$PIPE_OPENING" | sed -E 's/(.*[。！？、]).*/\1/')"
     [ -n "$PIPE_CUT" ] && PIPE_OPENING="$PIPE_CUT"
     log full "pipeline opening (${#PIPE_OPENING} chars): ${PIPE_OPENING:0:40}..."
     speak "$PIPE_OPENING" 120 full
 
-    # Bridge so the listener knows an overall summary follows the opening.
-    speak "$OVERFLOW_PIPELINE_BRIDGE" 90 summary
+    # Bridge so the listener knows an overall summary follows the opening. Play
+    # the pre-rendered clip (instant, engine-independent, blocks until it stops
+    # so it can't talk over the summary); fall back to live TTS only if the clip
+    # is unavailable.
+    if ! play_notice_clip "$BRIDGE_CLIP"; then
+      speak "$OVERFLOW_PIPELINE_BRIDGE" 90 summary
+    fi
 
     # Join the background summary (usually already done during the opening read).
+    # Measure the seam: how long the summarizer took overall, how much the
+    # opening+bridge covered, and the residual gap where `wait` actually blocked
+    # (the silence the listener hears before the summary — 0 = seamless; if it's
+    # consistently >0, raise OVERFLOW_OPENING_CHARS).
+    PIPE_PRE_WAIT="$(date +%s)"
     wait "$PIPE_PID" 2>/dev/null
+    PIPE_POST_WAIT="$(date +%s)"
+    log info "pipeline timing: summarizer $(( PIPE_POST_WAIT - PIPE_T0 ))s, opening+bridge $(( PIPE_PRE_WAIT - PIPE_T0 ))s, gap before summary $(( PIPE_POST_WAIT - PIPE_PRE_WAIT ))s"
     SUMMARY="$(cat "$PIPE_TMP" 2>/dev/null)"
     rm -f "$PIPE_TMP" 2>/dev/null
 

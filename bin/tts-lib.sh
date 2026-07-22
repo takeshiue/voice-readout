@@ -17,6 +17,10 @@ export LC_ALL=C.utf8
 # data dir). Resolved from BASH_SOURCE so it works however the caller was run.
 PLUGIN_ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)"
 NOTICE_CLIP="${PLUGIN_ROOT_DIR}/assets/overflow-notice.wav"
+# Bridge clip for the experimental overflow pipeline (summarize-and-speak.sh):
+# spoken between the verbatim opening and the summary. Pre-rendered (Gemini 3.1
+# Flash TTS Preview, Aoede) so it's instant and consistent instead of live TTS.
+BRIDGE_CLIP="${PLUGIN_ROOT_DIR}/assets/summary-bridge.wav"
 
 # Persisted settings live here (written by bin/toggle.sh, seeded by
 # `toggle.sh init`). Defined up front because the tuning values below read from

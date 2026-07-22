@@ -158,7 +158,7 @@ case "$TARGET" in
     add_default PREFLIGHT_TIMEOUT 10
     add_default WARM_SKIP_WINDOW 120
     add_default OVERFLOW_PIPELINE off
-    add_default OVERFLOW_OPENING_CHARS 80
+    add_default OVERFLOW_OPENING_CHARS 150
     add_default WATCH_INTERVAL 120
     add_default LOG_MAX_BYTES 1048576
     add_default TTS_RATE 1.3
