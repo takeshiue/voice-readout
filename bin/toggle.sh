@@ -39,7 +39,9 @@
 #                knobs that used to be environment-variable-only). Valid keys:
 #                ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES
 #                TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT
-#                WATCH_INTERVAL LOG_MAX_BYTES TTS_RATE TTS_PITCH NOTIFY_COOLDOWN
+#                WARM_SKIP_WINDOW (skip preflight if last readout succeeded
+#                within N sec; 0 disables) WATCH_INTERVAL LOG_MAX_BYTES
+#                TTS_RATE TTS_PITCH NOTIFY_COOLDOWN
 #                STARTUP_GREETING_TEXT (the session-start greeting text)
 #   gemini-key      sets/clears the Gemini API key used by the gemini backend
 #   inworld-key     sets/clears the Inworld API key used by the inworld backend
@@ -154,6 +156,7 @@ case "$TARGET" in
     add_default TTS_RETRY_WAIT_BASE 20
     add_default TTS_RETRY_WAIT 90
     add_default PREFLIGHT_TIMEOUT 10
+    add_default WARM_SKIP_WINDOW 120
     add_default WATCH_INTERVAL 120
     add_default LOG_MAX_BYTES 1048576
     add_default TTS_RATE 1.3
@@ -254,10 +257,10 @@ case "$TARGET" in
       # numeric. set_key's sed substitution can't carry a '/' in the value, so
       # keep the greeting text slash-free (edit the config file directly for
       # anything unusual).
-      ONDEVICE_MAX_CHARS|TTS_CHUNK_CHARS|TTS_CHUNK_RETRIES|TTS_RETRY_WAIT_BASE|TTS_RETRY_WAIT|PREFLIGHT_TIMEOUT|WATCH_INTERVAL|LOG_MAX_BYTES|TTS_RATE|TTS_PITCH|NOTIFY_COOLDOWN|STARTUP_GREETING_TEXT) ;;
+      ONDEVICE_MAX_CHARS|TTS_CHUNK_CHARS|TTS_CHUNK_RETRIES|TTS_RETRY_WAIT_BASE|TTS_RETRY_WAIT|PREFLIGHT_TIMEOUT|WARM_SKIP_WINDOW|WATCH_INTERVAL|LOG_MAX_BYTES|TTS_RATE|TTS_PITCH|NOTIFY_COOLDOWN|STARTUP_GREETING_TEXT) ;;
       *)
         echo "unknown tuning key: $TUNE_KEY" >&2
-        echo "valid keys: ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT WATCH_INTERVAL LOG_MAX_BYTES TTS_RATE TTS_PITCH NOTIFY_COOLDOWN STARTUP_GREETING_TEXT" >&2
+        echo "valid keys: ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT WARM_SKIP_WINDOW WATCH_INTERVAL LOG_MAX_BYTES TTS_RATE TTS_PITCH NOTIFY_COOLDOWN STARTUP_GREETING_TEXT" >&2
         exit 1
         ;;
     esac

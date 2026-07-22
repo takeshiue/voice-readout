@@ -272,6 +272,12 @@ clear_failure_notifications() {
 # guessing from process liveness alone.
 ONDEVICE_LOCK_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-ondevice.lock"
 
+# Epoch seconds of the last fully-successful on-device readout. Used to skip the
+# ~2s preflight probe when the engine was confirmed working very recently (it is
+# still warm, so re-probing it only adds latency to every follow-up readout in
+# an active conversation). Written on success below; read at the preflight gate.
+ONDEVICE_LASTSPOKE_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-ondevice-lastspoke"
+
 # Longest text the on-device engine reliably finishes — see the ceiling check
 # in speak() for how this number was arrived at. Exposed as a function so
 # callers that would rather shorten their text than be refused (the Stop
@@ -894,7 +900,23 @@ speak() {
         # Fail fast on an already-wedged engine instead of only finding out
         # after the full-length call below times out (up to $cap seconds —
         # minutes, for a long full-mode readout).
-        if ! engine_is_responsive; then
+        #
+        # Warm-skip: the probe itself binds the engine (~2s) and runs before
+        # every readout. When the last readout succeeded within the warm window
+        # the engine is still up, so skip the probe and let the speak call's own
+        # timeout+retry catch the rare case where it went cold anyway (that one
+        # readout is slower; the safety net is not lost). Fewer probes also means
+        # one less engine-binding operation to collide with a concurrent call.
+        local warm_window last_spoke now_secs skip_preflight=0
+        warm_window="$(get_tuning WARM_SKIP_WINDOW 120)"
+        if [ "$warm_window" -gt 0 ] 2>/dev/null; then
+          last_spoke="$(cat "$ONDEVICE_LASTSPOKE_FILE" 2>/dev/null)"
+          now_secs="$(date +%s)"
+          if [ -n "$last_spoke" ] && [ "$(( now_secs - last_spoke ))" -lt "$warm_window" ] 2>/dev/null; then
+            skip_preflight=1
+          fi
+        fi
+        if [ "$skip_preflight" -eq 0 ] && ! engine_is_responsive; then
           log error "ondevice engine not responding to preflight probe"
           notify_failure
           start_recovery_watcher
@@ -1052,6 +1074,9 @@ speak() {
         # like from the log, so make a partial readout visible on its face.
         if [ "$failed" -eq 0 ] && [ "$chunk_count" -eq "$total_chunks" ]; then
           log spoke "termux-tts-speak (${tts_args[*]}, ${chunk_count}/${total_chunks} chunks, timeout ${timeout_secs}s total budget)"
+          # Mark the engine confirmed-warm so the next readout within the warm
+          # window can skip the preflight probe (see the preflight gate above).
+          date +%s > "$ONDEVICE_LASTSPOKE_FILE" 2>/dev/null
           clear_failure_notifications
         else
           log error "termux-tts-speak timed out or failed (exit $rc, stopped at chunk ${chunk_count}/${total_chunks})"
