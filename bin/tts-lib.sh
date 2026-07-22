@@ -301,7 +301,7 @@ READOUT_OVERFLOW_NOTICE="${VOICE_READOUT_OVERFLOW_NOTICE:-長文のため要約�
 
 # Bridge phrase spoken between the verbatim opening and the summary in the
 # experimental overflow pipeline (summarize-and-speak.sh, toggle OVERFLOW_PIPELINE).
-OVERFLOW_PIPELINE_BRIDGE="${VOICE_READOUT_OVERFLOW_PIPELINE_BRIDGE:-この後、全体を要約するね。}"
+OVERFLOW_PIPELINE_BRIDGE="${VOICE_READOUT_OVERFLOW_PIPELINE_BRIDGE:-残りは要約します。}"
 
 # Play a pre-rendered fixed-phrase clip (a bundled .wav) through the phone
 # speaker, returning 0 if it played and 1 if the clip is unavailable so the
