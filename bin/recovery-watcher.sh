@@ -51,7 +51,7 @@ while [ "$tries" -lt "$MAX_TRIES" ]; do
     # the backend is on-device; otherwise announce live. speak() clears the ⚠️
     # notifications on success, so when we play the clip in its place we call
     # clear_failure_notifications() ourselves to keep that side effect.
-    if [ "$(get_tts_backend "")" = "ondevice" ] && play_notice_clip "$PLUGIN_ROOT_DIR/assets/recovery.wav"; then
+    if [ "$(get_tts_backend "")" = "ondevice" ] && play_notice_clip "$PLUGIN_ROOT_DIR/assets/recovery.wav" nowait; then
       clear_failure_notifications
     else
       speak "読み上げ、直ったみたいよ。お待たせしちゃってごめんね"

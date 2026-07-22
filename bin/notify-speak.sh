@@ -87,7 +87,7 @@ fi
 # time, no API call). Play the clip when the notification backend is on-device
 # (the default). If the user has picked a cloud backend, honour that choice and
 # synthesize live instead. Sweet-persona phrases (CLIP="") always go live.
-if [ -n "$CLIP" ] && [ "$(get_tts_backend notification)" = "ondevice" ] && play_notice_clip "$CLIP"; then
+if [ -n "$CLIP" ] && [ "$(get_tts_backend notification)" = "ondevice" ] && play_notice_clip "$CLIP" nowait; then
   exit 0
 fi
 

@@ -314,8 +314,21 @@ OVERFLOW_PIPELINE_BRIDGE="${VOICE_READOUT_OVERFLOW_PIPELINE_BRIDGE:-残りは要
 # files under $TERMUX_HOME/storage — the bundled asset lives on the proot side,
 # so copy it into the Termux scratch dir first. The stop switch is honoured up
 # front so a fixed cue can't slip through after the user has silenced readout.
+# The optional 2nd arg picks how the clip is timed:
+#   wait   (default) — block until the clip finishes, then stop the player, so a
+#          readout that FOLLOWS the clip (the overflow summary, the pipeline
+#          summary) can't talk over it. Costs extra termux-media-player round
+#          trips (info poll + stop), ~2s each.
+#   nowait — the clip is terminal: nothing is spoken after it (a notification
+#          cue, the recovery announce, the session-end farewell). Don't poll and
+#          don't stop — every termux-media-player sub-command is a ~2s Termux:API
+#          round trip, and here they buy nothing. `play` hands the clip to
+#          Android's media service, which finishes it on its own even after this
+#          process exits (verified with the session-end clip). This is what makes
+#          a fixed notification cue sound promptly instead of ~8s later.
 play_notice_clip() {
   local clip="$1"
+  local mode="${2:-wait}"
   [ -e "$STOP_SWITCH_FILE" ] && return 0
   [ -f "$clip" ] || return 1
   command -v termux-media-player >/dev/null 2>&1 || return 1
@@ -328,9 +341,14 @@ play_notice_clip() {
     rm -f "$dest"
     return 1
   fi
-  # Fire-and-forget like speak_gemini's playback: poll until it stops so the
-  # summary that follows doesn't talk over the clip. Bounded so a stuck player
-  # can't hang the hook.
+  if [ "$mode" = "nowait" ]; then
+    # Leave $dest in place: the media service is still reading it, and the next
+    # clip of the same basename just overwrites it. Don't rm mid-playback.
+    log spoke "notice clip ($(basename "$clip"), nowait)"
+    return 0
+  fi
+  # Poll until it stops so the readout that follows doesn't talk over the clip.
+  # Bounded so a stuck player can't hang the hook.
   local waited=0
   while [ "$waited" -lt 15 ]; do
     sleep 1

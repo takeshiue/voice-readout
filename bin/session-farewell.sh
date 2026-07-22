@@ -37,10 +37,13 @@ esac
 log farewell "session end (${REASON:-unknown})"
 
 # Fixed clip via termux-media-player. play_notice_clip honours the stop switch,
-# copies the asset into the Termux-accessible tmp dir, plays, and waits for it
-# to finish. Playback is owned by Android's media service, so it survives this
-# process exiting (tested). A farewell is cosmetic — if the clip is missing,
-# just skip; it is never worth a live TTS round-trip at exit.
-play_notice_clip "$PLUGIN_ROOT_DIR/assets/session-end.wav" || log skip "session-end: clip unavailable"
+# copies the asset into the Termux-accessible tmp dir, and plays it. nowait:
+# nothing follows the farewell, and playback is owned by Android's media service
+# so it finishes on its own even after this process (and Claude Code) exits
+# (tested — the clip survives the launcher being SIGKILLed). Waiting for it here
+# would only delay teardown by the extra termux-media-player round trips. A
+# farewell is cosmetic — if the clip is missing, just skip; it is never worth a
+# live TTS round-trip at exit.
+play_notice_clip "$PLUGIN_ROOT_DIR/assets/session-end.wav" nowait || log skip "session-end: clip unavailable"
 
 exit 0
