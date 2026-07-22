@@ -91,8 +91,13 @@ if [ "$READOUT_MODE" = "full" ]; then
     log fallback "overflow pipeline: opening now, summarizing whole response in background"
     PIPE_PROMPT="${BASE_PROMPT_PREFIX} $(get_persona_style) ${BASE_PROMPT_SUFFIX}"
     PIPE_TMP="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/vr-pipe-$$")"
+    PIPE_DONE_TMP="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/vr-pipe-done-$$")"
     PIPE_T0="$(date +%s)"
-    ( printf '%s' "$CLEANED_TRIMMED" | claude --safe-mode -p --model haiku "$PIPE_PROMPT" > "$PIPE_TMP" 2>/dev/null ) &
+    # `wait` below only runs after the opening+bridge audio finishes, so
+    # `date +%s` right after `wait` returns is NOT when claude actually exited
+    # if it finished earlier — wait() on an already-exited child returns
+    # instantly. Have the subshell stamp its own real completion time instead.
+    ( printf '%s' "$CLEANED_TRIMMED" | claude --safe-mode -p --model haiku "$PIPE_PROMPT" > "$PIPE_TMP" 2>/dev/null; date +%s > "$PIPE_DONE_TMP" ) &
     PIPE_PID=$!
 
     # Opening: first N chars, backed off to the last sentence/clause boundary
@@ -124,9 +129,11 @@ if [ "$READOUT_MODE" = "full" ]; then
     PIPE_PRE_WAIT="$(date +%s)"
     wait "$PIPE_PID" 2>/dev/null
     PIPE_POST_WAIT="$(date +%s)"
-    log info "pipeline timing: summarizer $(( PIPE_POST_WAIT - PIPE_T0 ))s, opening+bridge $(( PIPE_PRE_WAIT - PIPE_T0 ))s, gap before summary $(( PIPE_POST_WAIT - PIPE_PRE_WAIT ))s"
+    PIPE_TRUE_DONE="$(cat "$PIPE_DONE_TMP" 2>/dev/null)"
+    PIPE_TRUE_DONE="${PIPE_TRUE_DONE:-$PIPE_POST_WAIT}"
+    log info "pipeline timing: summarizer $(( PIPE_TRUE_DONE - PIPE_T0 ))s (true completion), opening+bridge $(( PIPE_PRE_WAIT - PIPE_T0 ))s, gap before summary $(( PIPE_POST_WAIT - PIPE_PRE_WAIT ))s"
     SUMMARY="$(cat "$PIPE_TMP" 2>/dev/null)"
-    rm -f "$PIPE_TMP" 2>/dev/null
+    rm -f "$PIPE_TMP" "$PIPE_DONE_TMP" 2>/dev/null
 
     # Same refusal guard + empty fallback + on-device ceiling trim as the normal
     # summarizer path below (kept in sync deliberately).
