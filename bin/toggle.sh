@@ -2,7 +2,7 @@
 # Flips a voice-readout setting. Meant to be run by Claude when the user asks
 # in chat ("音声読み上げをオフにして" / "フル読み上げにして" etc).
 #
-# Usage: toggle.sh <stop|notification|all|greeting> <on|off>
+# Usage: toggle.sh <stop|notification|all|greeting|farewell> <on|off>
 #        toggle.sh mode <summary|full>
 #        toggle.sh persona <on|off>
 #        toggle.sh backend <ondevice|gemini|inworld|elevenlabs>
@@ -17,6 +17,8 @@
 #   all          stop + notification together (not greeting — that is separate)
 #   greeting     SessionStart greeting, spoken once at launch/resume so you can
 #                hear whether the readout path works. Text: tune STARTUP_GREETING_TEXT
+#   farewell     SessionEnd farewell, a fixed clip (assets/session-end.wav)
+#                played once when the session ends (also separate from "all")
 #   mode         summary = one-sentence Haiku summary (default)
 #                full    = verbatim readout of the response (minus code/URLs)
 #   persona      on  = apply the tone preset in personas/persona.md
@@ -51,7 +53,7 @@ PERSONA_PRESET="$PLUGIN_DIR/personas/persona.md"
 ENV_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout.env"
 
 usage() {
-  echo "Usage: $0 <stop|notification|all|greeting> <on|off>" >&2
+  echo "Usage: $0 <stop|notification|all|greeting|farewell> <on|off>" >&2
   echo "       $0 mode <summary|full>" >&2
   echo "       $0 persona <on|off>" >&2
   echo "       $0 backend <ondevice|gemini|inworld|elevenlabs>" >&2
@@ -132,6 +134,9 @@ case "$TARGET" in
     # immediately whether the readout path works. Text is configurable.
     add_default STARTUP_GREETING on
     add_default STARTUP_GREETING_TEXT voice-readout、準備できたよ
+    # Played once at session end (SessionEnd hook): a fixed farewell clip
+    # (assets/session-end.wav), not live TTS. On by default.
+    add_default SESSION_END_GREETING on
     # One engine per function, each the user's own choice. All default to
     # ondevice: no API key, no network, speaks immediately.
     add_default TTS_BACKEND ondevice
@@ -158,14 +163,15 @@ case "$TARGET" in
     cat "$CONFIG_FILE"
     exit 0
     ;;
-  stop|notification|all|greeting)
+  stop|notification|all|greeting|farewell)
     case "$STATE" in on|off) ;; *) usage ;; esac
     case "$TARGET" in
       stop) set_key STOP_READOUT "$STATE" ;;
       notification) set_key NOTIFICATION_READOUT "$STATE" ;;
-      # Independent of "all": the startup greeting is a separate cue, so
-      # turning off the two readouts does not silence it (and vice versa).
+      # Independent of "all": the startup greeting and the farewell are separate
+      # cues, so turning off the two readouts does not silence them (or v.v.).
       greeting) set_key STARTUP_GREETING "$STATE" ;;
+      farewell) set_key SESSION_END_GREETING "$STATE" ;;
       all)
         set_key STOP_READOUT "$STATE"
         set_key NOTIFICATION_READOUT "$STATE"
