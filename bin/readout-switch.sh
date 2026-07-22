@@ -13,11 +13,13 @@
 # spoke through the real speaker while the user's own setting said off. A
 # stop the user cannot rely on is not a stop.
 #
-# Usage: readout-switch.sh <stop|resume|status|notify>
-#   stop    silence all readouts until resumed
-#   resume  allow readouts again
-#   status  print the current state
-#   notify  (re)post the notification that shows the state and its button
+# Usage: readout-switch.sh <stop|resume|status|notify|session-end>
+#   stop         silence all readouts until resumed
+#   resume       allow readouts again
+#   status       print the current state
+#   notify       (re)post the notification that shows the state and its button
+#   session-end  (SessionEnd hook) remove the notification on exit, but only
+#                when enabled — a stopped state is kept visible; skips /clear
 
 set -u
 
@@ -115,8 +117,21 @@ case "${1:-}" in
   notify)
     post_notification
     ;;
+  session-end)
+    # Called from the SessionEnd hook. Take the button down when Claude Code
+    # exits so it isn't left in the shade with nothing to stop — but only when
+    # readout is currently ENABLED. If it's stopped, leave the notification up:
+    # that's a deliberate state the user should still see and be able to 再開
+    # without relaunching, and it's why the next session would be silent.
+    # /clear fires SessionEnd too but the session continues, so keep the button.
+    REASON="$(cat 2>/dev/null | jq -r '.reason // empty' 2>/dev/null)"
+    [ "$REASON" = "clear" ] && exit 0
+    if [ ! -e "$STOP_FILE" ] && command -v termux-notification-remove >/dev/null 2>&1; then
+      termux-notification-remove "$NOTIF_ID" 2>/dev/null
+    fi
+    ;;
   *)
-    echo "Usage: $0 <stop|resume|status|notify>" >&2
+    echo "Usage: $0 <stop|resume|status|notify|session-end>" >&2
     exit 1
     ;;
 esac
