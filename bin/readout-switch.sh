@@ -56,13 +56,13 @@ NOTIF_ID="$NOTIF_ID"
 if [ -e "\$STOP_FILE" ]; then
   rm -f "\$STOP_FILE"
   termux-notification --id "\$NOTIF_ID" --title "読み上げ 有効" \\
-    --content "タップで停止します" --ongoing --priority low \\
-    --button1 "停止" --button1-action "sh \$0"
+    --content "[停止する]ボタンで即・全停止できます" --ongoing --priority low \\
+    --button1 "停止する" --button1-action "sh \$0"
 else
   touch "\$STOP_FILE"
   termux-notification --id "\$NOTIF_ID" --title "読み上げ 停止中" \\
-    --content "タップで再開します" --ongoing --priority low \\
-    --button1 "再開" --button1-action "sh \$0"
+    --content "読み上げは止まっています。[再開する]で元に戻ります" --ongoing --priority low \\
+    --button1 "再開する" --button1-action "sh \$0"
 fi
 HELPER_EOF
   chmod +x "$HELPER" 2>/dev/null
@@ -75,20 +75,20 @@ post_notification() {
     termux-notification \
       --id "$NOTIF_ID" \
       --title "読み上げ 停止中" \
-      --content "タップで再開します" \
+      --content "読み上げは止まっています。[再開する]で元に戻ります" \
       --ongoing \
       --priority low \
-      --button1 "再開" \
+      --button1 "再開する" \
       --button1-action "sh $HELPER" \
       2>/dev/null
   else
     termux-notification \
       --id "$NOTIF_ID" \
       --title "読み上げ 有効" \
-      --content "タップで停止します" \
+      --content "[停止する]ボタンで即・全停止できます" \
       --ongoing \
       --priority low \
-      --button1 "停止" \
+      --button1 "停止する" \
       --button1-action "sh $HELPER" \
       2>/dev/null
   fi
