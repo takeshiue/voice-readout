@@ -55,12 +55,12 @@ NOTIF_ID="$NOTIF_ID"
 
 if [ -e "\$STOP_FILE" ]; then
   rm -f "\$STOP_FILE"
-  termux-notification --id "\$NOTIF_ID" --title "読み上げ 有効" \\
+  termux-notification --id "\$NOTIF_ID" --title "voice-readout 読み上げ 有効" \\
     --content "[停止する]ボタンで即・全停止できます" --ongoing --priority low \\
     --button1 "停止する" --button1-action "sh \$0"
 else
   touch "\$STOP_FILE"
-  termux-notification --id "\$NOTIF_ID" --title "読み上げ 停止中" \\
+  termux-notification --id "\$NOTIF_ID" --title "voice-readout 読み上げ 停止中" \\
     --content "読み上げは止まっています。[再開する]で元に戻ります" --ongoing --priority low \\
     --button1 "再開する" --button1-action "sh \$0"
 fi
@@ -74,7 +74,7 @@ post_notification() {
   if [ -e "$STOP_FILE" ]; then
     termux-notification \
       --id "$NOTIF_ID" \
-      --title "読み上げ 停止中" \
+      --title "voice-readout 読み上げ 停止中" \
       --content "読み上げは止まっています。[再開する]で元に戻ります" \
       --ongoing \
       --priority low \
@@ -84,7 +84,7 @@ post_notification() {
   else
     termux-notification \
       --id "$NOTIF_ID" \
-      --title "読み上げ 有効" \
+      --title "voice-readout 読み上げ 有効" \
       --content "[停止する]ボタンで即・全停止できます" \
       --ongoing \
       --priority low \
