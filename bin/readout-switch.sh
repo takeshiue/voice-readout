@@ -126,8 +126,15 @@ case "${1:-}" in
     # /clear fires SessionEnd too but the session continues, so keep the button.
     REASON="$(cat 2>/dev/null | jq -r '.reason // empty' 2>/dev/null)"
     [ "$REASON" = "clear" ] && exit 0
+    # Detach the removal. This is a synchronous SessionEnd hook, and the
+    # termux-notification-remove round trip (~1-2s) outlasts the window Claude
+    # Code gives SessionEnd hooks before it aborts them ("Hook cancelled"), so a
+    # foreground call is killed mid-flight and the button lingers. setsid puts it
+    # in its own session so the hook's process group being killed can't take it
+    # down; the hook returns immediately.
     if [ ! -e "$STOP_FILE" ] && command -v termux-notification-remove >/dev/null 2>&1; then
-      termux-notification-remove "$NOTIF_ID" 2>/dev/null
+      setsid sh -c "termux-notification-remove '$NOTIF_ID' 2>/dev/null" >/dev/null 2>&1 </dev/null &
+      disown 2>/dev/null || true
     fi
     ;;
   *)
