@@ -21,8 +21,9 @@ NOTICE_CLIP="${PLUGIN_ROOT_DIR}/assets/overflow-notice.wav"
 # spoken between the verbatim opening and the summary. Pre-rendered (Gemini 3.1
 # Flash TTS Preview, Aoede) so it's instant and consistent instead of live TTS.
 BRIDGE_CLIP="${PLUGIN_ROOT_DIR}/assets/summary-bridge.wav"
-# Test-only cue played at each cloud chunk boundary when CHUNK_MARKER is on, so
-# the split points are audible while testing (speak_cloud_chunked).
+# Diagnostic cue played at each cloud chunk boundary when CHUNK_MARKER is on, so
+# the split points are audible (speak_cloud_chunked). Default off: it is a
+# listening aid for checking chunking/handoff, not part of normal readout.
 CHUNK_MARKER_CLIP="${PLUGIN_ROOT_DIR}/assets/chunk-marker.wav"
 
 # Persisted settings live here (written by bin/toggle.sh, seeded by

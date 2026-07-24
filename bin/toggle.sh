@@ -19,6 +19,10 @@
 #                hear whether the readout path works. Text: tune STARTUP_GREETING_TEXT
 #   farewell     SessionEnd farewell, a fixed clip (assets/session-end.wav)
 #                played once when the session ends (also separate from "all")
+#   overflow-pipeline  read the opening verbatim while the summary is generated
+#   chunk-marker Diagnostic aid: play a short cue (assets/chunk-marker.wav) at
+#                every cloud chunk boundary, so where the text was split and how
+#                seamless the handoff sounds are both audible. Default off.
 #   mode         summary = one-sentence Haiku summary (default)
 #                full    = verbatim readout of the response (minus code/URLs)
 #   persona      on  = apply the tone preset in personas/persona.md
@@ -167,6 +171,11 @@ case "$TARGET" in
     add_default TTS_RATE 1.3
     add_default TTS_PITCH 1.0
     add_default NOTIFY_COOLDOWN 1800
+    # Diagnostic: plays a short cue at every cloud chunk boundary, making the
+    # chunking and the prefetch handoff audible. Listed here (rather than left
+    # as a code-only switch) so the config file shows it exists — but default
+    # off, because during normal listening the cue is just interruption.
+    add_default CHUNK_MARKER off
     echo "voice-readout: config initialised at $CONFIG_FILE"
     cat "$CONFIG_FILE"
     exit 0
@@ -183,8 +192,9 @@ case "$TARGET" in
       # Experimental: read the opening verbatim while summarizing in the
       # background, so a long readout starts immediately. Default off.
       overflow-pipeline) set_key OVERFLOW_PIPELINE "$STATE" ;;
-      # Test aid: append a short spoken marker to the end of each cloud chunk so
-      # the chunk boundaries are audible. Default off — on only while testing.
+      # Diagnostic: append the cue clip to the end of each cloud chunk so the
+      # chunk boundaries are audible. Default off; turn on when checking how the
+      # text got split or whether the chunk handoff still sounds seamless.
       chunk-marker) set_key CHUNK_MARKER "$STATE" ;;
       all)
         set_key STOP_READOUT "$STATE"
