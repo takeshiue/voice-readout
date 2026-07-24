@@ -21,6 +21,9 @@ NOTICE_CLIP="${PLUGIN_ROOT_DIR}/assets/overflow-notice.wav"
 # spoken between the verbatim opening and the summary. Pre-rendered (Gemini 3.1
 # Flash TTS Preview, Aoede) so it's instant and consistent instead of live TTS.
 BRIDGE_CLIP="${PLUGIN_ROOT_DIR}/assets/summary-bridge.wav"
+# Test-only cue played at each cloud chunk boundary when CHUNK_MARKER is on, so
+# the split points are audible while testing (speak_cloud_chunked).
+CHUNK_MARKER_CLIP="${PLUGIN_ROOT_DIR}/assets/chunk-marker.wav"
 
 # Persisted settings live here (written by bin/toggle.sh, seeded by
 # `toggle.sh init`). Defined up front because the tuning values below read from
@@ -1057,15 +1060,20 @@ speak_cloud_chunked() {
   local n=${#chunks[@]}
   [ "$n" -eq 0 ] && return 1
 
-  # Test aid: when CHUNK_MARKER is on, append a short spoken marker to the END of
-  # each chunk so the boundaries are audible (you only hear the audio, not the
-  # split points) — the marker sounds right before the next chunk starts, which
-  # is exactly the seam. A soft chime word, uncommon in speech, with a leading
-  # 読点 for a beat before it. Applied AFTER splitting so it never shifts the
-  # chunk boundaries, and kept tiny so it barely affects timing. Default off.
-  if [ "$(get_tuning CHUNK_MARKER off)" = "on" ]; then
-    local mark="、ドン" mi
-    for mi in "${!chunks[@]}"; do chunks[$mi]="${chunks[$mi]}${mark}"; done
+  # Test aid: when CHUNK_MARKER is on, play a short cue clip at the END of each
+  # chunk so the split points are audible while testing. This deliberately adds a
+  # small gap per boundary (the cue itself) — that cue IS what you're listening
+  # for; production runs keep this off and stay gapless. Termux:API can only open
+  # files under the Termux scratch dir, so copy the proot-side asset in once and
+  # reuse it; the play+sleep mirrors _play_media_file (no per-play round trips).
+  local marker_dest="" marker_sleep=""
+  if [ "$(get_tuning CHUNK_MARKER off)" = "on" ] && [ -f "$CHUNK_MARKER_CLIP" ]; then
+    local _msd="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}/.voice-readout-tmp"
+    if mkdir -p "$_msd" 2>/dev/null && cp "$CHUNK_MARKER_CLIP" "$_msd/" 2>/dev/null; then
+      marker_dest="$_msd/$(basename "$CHUNK_MARKER_CLIP")"
+      local _md; _md="$(_audio_duration "$marker_dest")"
+      marker_sleep="$(awk "BEGIN{printf \"%.1f\", (${_md:-2})+0.3}")"
+    fi
   fi
 
   # Per-chunk playback ceiling. A <=chunk_max-char chunk is at most ~40s of
@@ -1141,6 +1149,13 @@ speak_cloud_chunked() {
     fi
 
     _play_media_file "$(_cloud_audio_path "$backend" "$i")" "$pcap"
+    # Audible boundary cue (test only). Played after the chunk's audio, before
+    # the next chunk, so it lands exactly on the seam. `play` supersedes the
+    # finished chunk; the sleep lets the short cue play out before the next.
+    if [ -n "$marker_dest" ]; then
+      termux-media-player play "$marker_dest" >/dev/null 2>&1
+      sleep "$marker_sleep"
+    fi
     i=$(( i + 1 ))
   done
   log spoke "${backend}-tts (pipelined, ${n} chunks)"
