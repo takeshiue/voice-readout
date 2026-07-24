@@ -1057,13 +1057,15 @@ speak_cloud_chunked() {
   local n=${#chunks[@]}
   [ "$n" -eq 0 ] && return 1
 
-  # Test aid: when CHUNK_MARKER is on, prefix each chunk with a short spoken
-  # marker so the boundaries are audible (you only hear the audio, not the split
-  # points). Applied AFTER splitting so it never shifts the chunk boundaries, and
-  # kept tiny + uncommon-in-speech so it barely affects timing. Default off.
+  # Test aid: when CHUNK_MARKER is on, append a short spoken marker to the END of
+  # each chunk so the boundaries are audible (you only hear the audio, not the
+  # split points) — the marker sounds right before the next chunk starts, which
+  # is exactly the seam. A soft chime word, uncommon in speech, with a leading
+  # 読点 for a beat before it. Applied AFTER splitting so it never shifts the
+  # chunk boundaries, and kept tiny so it barely affects timing. Default off.
   if [ "$(get_tuning CHUNK_MARKER off)" = "on" ]; then
-    local mark="ピッ、" mi
-    for mi in "${!chunks[@]}"; do chunks[$mi]="${mark}${chunks[$mi]}"; done
+    local mark="、ポーン" mi
+    for mi in "${!chunks[@]}"; do chunks[$mi]="${chunks[$mi]}${mark}"; done
   fi
 
   # Per-chunk playback ceiling. A <=chunk_max-char chunk is at most ~40s of

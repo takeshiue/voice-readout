@@ -180,8 +180,8 @@ case "$TARGET" in
       # Experimental: read the opening verbatim while summarizing in the
       # background, so a long readout starts immediately. Default off.
       overflow-pipeline) set_key OVERFLOW_PIPELINE "$STATE" ;;
-      # Test aid: prefix each cloud chunk with a short spoken marker so the
-      # chunk boundaries are audible. Default off — turn on only while testing.
+      # Test aid: append a short spoken marker to the end of each cloud chunk so
+      # the chunk boundaries are audible. Default off — on only while testing.
       chunk-marker) set_key CHUNK_MARKER "$STATE" ;;
       all)
         set_key STOP_READOUT "$STATE"
