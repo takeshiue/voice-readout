@@ -1054,22 +1054,25 @@ _audio_duration() {
   esac
 }
 
-# Play a file via the Termux media player and return once it has finished, then
-# delete it. We know each chunk's exact length (see _audio_duration), so we
-# sleep for that instead of polling `termux-media-player info`: each info call
-# is a ~2-3s Termux:API round-trip, so polling over-ran the true end by ~5s and
-# that dead air was the gap heard between chunks (measured 2026-07-24). The
-# margin covers the player's start-up latency so the tail isn't clipped. Falls
-# back to polling only when the duration can't be determined.
+# Play a file via the Termux media player. We know each chunk's exact length
+# (see _audio_duration), so we sleep for it instead of polling `termux-media-
+# player info` (each info call is a ~2-3s round-trip that over-ran the true end).
+#
+# LEAD (3rd arg, seconds) returns that much BEFORE the audio ends, so the caller
+# can issue the next chunk's `play` early: a `play` does NOT stop the current
+# track until the new one is prepared (~2s Termux:API round-trip), so that
+# prepare overlaps this chunk's tail and the next chunk takes over right as this
+# one finishes — hiding the round-trip that used to be a ~4s inter-chunk gap
+# (verified seamless at LEAD≈1.4 on 2026-07-24). LEAD=0 (the final chunk, or the
+# unknown-length fallback) plays fully. We do NOT rm/stop here: with the handoff
+# the file may still be feeding the media service; the caller cleans up once the
+# chunk is safely done.
 _play_media_file() {
-  local file="$1" cap="$2" dur
+  local file="$1" cap="$2" lead="${3:-0}" dur
   dur="$(_audio_duration "$file")"
   termux-media-player play "$file" >/dev/null 2>&1
   if [ -n "$dur" ]; then
-    sleep "$(awk "BEGIN{d=$dur+1.5; if(d>$cap)d=$cap; printf \"%.1f\", d}")"
-    # No stop: after the sleep the clip has ended on its own, and the next
-    # chunk's `play` supersedes an idle player. Skipping the ~2s
-    # termux-media-player stop round-trip is what keeps the seam tight.
+    sleep "$(awk "BEGIN{d=$dur-$lead; if(d<0)d=0; if(d>$cap)d=$cap; printf \"%.1f\", d}")"
   else
     local waited=0
     while [ "$waited" -lt "$cap" ]; do
@@ -1078,8 +1081,8 @@ _play_media_file() {
       termux-media-player info 2>/dev/null | grep -q 'Status: Playing' || break
     done
     termux-media-player stop >/dev/null 2>&1
+    rm -f "$file"
   fi
-  rm -f "$file"
   return 0
 }
 
@@ -1105,9 +1108,14 @@ speak_cloud_chunked() {
   # small so audio still starts quickly. Generation keeps up even so (measured
   # gen/audio <1 for every backend at these sizes, incl. Gemini once its ~6s
   # TTFB is amortised over a big enough chunk), aided by the depth-2 prefetch.
-  local chunk_max first_max chunks=() c
+  local chunk_max first_max play_lead chunks=() c
   chunk_max="$(get_tuning CLOUD_CHUNK_CHARS 200)"
   first_max="$(get_tuning CLOUD_FIRST_CHUNK_CHARS 80)"
+  # Seconds to issue the next chunk's play before the current one ends, so the
+  # next chunk's prepare overlaps this tail (see _play_media_file). 0 disables
+  # the overlap. Validate numeric.
+  play_lead="$(get_tuning CLOUD_PLAY_LEAD 1.4)"
+  case "$play_lead" in ''|*[!0-9.]*) play_lead=1.4 ;; esac
   while IFS= read -r -d '' c; do [ -n "$c" ] && chunks+=("$c"); done \
     < <(split_into_speech_chunks "$text" "$chunk_max" "$first_max")
   local n=${#chunks[@]}
@@ -1192,9 +1200,19 @@ speak_cloud_chunked() {
       gen_pid[$ahead]=$!
     fi
 
-    _play_media_file "$(_cloud_audio_path "$backend" "$i")" "$pcap"
+    # Overlap every chunk but the last: the last has no successor to hide behind,
+    # so it plays out fully (lead 0).
+    local lead=0
+    [ "$i" -lt "$(( n - 1 ))" ] && lead="$play_lead"
+    _play_media_file "$(_cloud_audio_path "$backend" "$i")" "$pcap" "$lead"
     i=$(( i + 1 ))
   done
+  # Cleanup deferred to here: with the lead handoff a chunk can still be feeding
+  # the media service just after _play_media_file returns, so removing files mid
+  # loop could pull one out from under playback. By now the last chunk (lead 0)
+  # has played out and all earlier ones are long done.
+  local k
+  for (( k = 0; k < n; k++ )); do rm -f "$(_cloud_audio_path "$backend" "$k")"; done
   log spoke "${backend}-tts (pipelined, ${n} chunks)"
   return 0
 }
