@@ -1064,7 +1064,7 @@ speak_cloud_chunked() {
   # 読点 for a beat before it. Applied AFTER splitting so it never shifts the
   # chunk boundaries, and kept tiny so it barely affects timing. Default off.
   if [ "$(get_tuning CHUNK_MARKER off)" = "on" ]; then
-    local mark="、ポーン" mi
+    local mark="、ふふっ" mi
     for mi in "${!chunks[@]}"; do chunks[$mi]="${chunks[$mi]}${mark}"; done
   fi
 
