@@ -112,6 +112,13 @@ printf 'greet %s%s | notif %s %s | resp %s %s%s' \
 # Appearing at all is therefore the signal: cues are on because you asked. The
 # bell alone, with no "mark" label: when it is visible there is only one thing
 # it can mean, so the word is five columns spent on nothing.
+# Reading pace, always shown: it applies to whichever engine is speaking, and
+# "is it me or is this fast today" is exactly the question the line should
+# answer without asking. 1.0 is roughly an announcer's pace; see resolve_speed()
+# in tts-lib.sh for how each engine's own knob is derived from it.
+speed="$(cfg READOUT_SPEED)"; [ -n "$speed" ] || speed="1.2"
+printf ' | speed ×%s' "$speed"
+
 [ "$(cfg CHUNK_MARKER)" = "on" ] && printf ' | 🔔'
 
 exit 0

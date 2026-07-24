@@ -4,6 +4,7 @@
 #
 # Usage: toggle.sh <stop|notification|all|greeting|farewell|overflow-pipeline|chunk-marker> <on|off>
 #        toggle.sh mode <summary|full>
+#        toggle.sh speed <0.5-2.0>
 #        toggle.sh persona <on|off>
 #        toggle.sh backend <ondevice|gemini|inworld|elevenlabs>
 #        toggle.sh backend-<notification|summary|full|file> <ondevice|gemini|inworld|elevenlabs>
@@ -23,6 +24,10 @@
 #   chunk-marker Diagnostic aid: play a short cue (assets/chunk-marker.wav) at
 #                every cloud chunk boundary, so where the text was split and how
 #                seamless the handoff sounds are both audible. Default off.
+#   speed        reading pace for EVERY engine: 1.0 is about 300 characters a
+#                minute (announcer pace), 1.2 the shipped default. Each engine's
+#                own knob is derived from it (they differ in native speed), so
+#                one number changes them all. Set a knob to a number to override.
 #   mode         summary = one-sentence Haiku summary (default)
 #                full    = verbatim readout of the response (minus code/URLs)
 #   persona      on  = apply the tone preset in personas/persona.md
@@ -61,6 +66,7 @@ ENV_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout.env"
 usage() {
   echo "Usage: $0 <stop|notification|all|greeting|farewell|overflow-pipeline|chunk-marker> <on|off>" >&2
   echo "       $0 mode <summary|full>" >&2
+  echo "       $0 speed <0.5-2.0>" >&2
   echo "       $0 persona <on|off>" >&2
   echo "       $0 backend <ondevice|gemini|inworld|elevenlabs>" >&2
   echo "       $0 backend-<notification|summary|full|file> <ondevice|gemini|inworld|elevenlabs>" >&2
@@ -168,7 +174,16 @@ case "$TARGET" in
     add_default OVERFLOW_OPENING_CHARS 150
     add_default WATCH_INTERVAL 120
     add_default LOG_MAX_BYTES 1048576
-    add_default TTS_RATE 1.3
+    # One reading-pace index for every engine (1.0 = about 300 chars/min, an
+    # announcer's pace). The per-engine knobs below stay "auto": each is derived
+    # from this index, scaled by that engine's own native pace, so a single
+    # number gives the same speed on all four. Put a number in one of them to
+    # override just that engine. See resolve_speed() in tts-lib.sh.
+    add_default READOUT_SPEED 1.2
+    add_default TTS_RATE auto
+    add_default GEMINI_SPEED auto
+    add_default INWORLD_SPEAKING_RATE auto
+    add_default ELEVENLABS_ATEMPO auto
     add_default TTS_PITCH 1.0
     add_default NOTIFY_COOLDOWN 1800
     # Diagnostic: plays a short cue at every cloud chunk boundary, making the
@@ -205,6 +220,20 @@ case "$TARGET" in
   mode)
     case "$STATE" in summary|full) ;; *) usage ;; esac
     set_key READOUT_MODE "$STATE"
+    ;;
+  speed)
+    # One reading-pace index for every engine: 1.0 is about 300 characters a
+    # minute (an announcer's pace), and each engine's own knob is derived from
+    # it, since the four do not talk at the same speed unadjusted. See
+    # resolve_speed() in tts-lib.sh. Range-checked so a typo cannot make the
+    # readout unlistenable — 0.5 is half pace, 2.0 is twice.
+    case "$STATE" in
+      ''|*[!0-9.]*) echo "speed must be a number, e.g. 1.2" >&2; exit 1 ;;
+    esac
+    if [ "$(awk -v s="$STATE" 'BEGIN{print (s>=0.5 && s<=2.0) ? "ok" : "bad"}')" = bad ]; then
+      echo "speed out of range (0.5-2.0): $STATE" >&2; exit 1
+    fi
+    set_key READOUT_SPEED "$STATE"
     ;;
   persona)
     case "$STATE" in on|off) ;; *) usage ;; esac

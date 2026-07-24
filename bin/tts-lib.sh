@@ -80,6 +80,37 @@ is_enabled() {
   [ "$val" != "off" ]
 }
 
+# READOUT_SPEED is the ONE speed the user sets: a reading-pace index where 1.0
+# means about 300 characters a minute — roughly a news announcer's pace, and
+# (by measurement, not design) almost exactly the on-device engine's own default.
+# It exists because the four engines do not talk at the same speed: measured
+# 2026-07-25 on one 147-character passage with every engine left unadjusted,
+#   gemini 361 / elevenlabs 327 / ondevice 305 / inworld 271 characters a minute.
+# So "1.3" set per-engine would produce four different speeds. Each engine's own
+# knob is therefore derived from the index, scaled by 300/(its own native pace):
+#
+#   engine      knob                    factor   1.2    1.3
+#   ondevice    TTS_RATE                1.01     1.21   1.31
+#   inworld     INWORLD_SPEAKING_RATE   1.11     1.33   1.44
+#   elevenlabs  ELEVENLABS_ATEMPO       0.92     1.10   1.19
+#   gemini      GEMINI_SPEED            0.83     1.00   1.08
+#
+# It is a guide, not an exact multiplier: the same index varies a few percent
+# with the passage and the voice, and gemini's knob is a prompt instruction
+# rather than a signal-level control, so it tracks least precisely.
+#
+# resolve_speed KEY FACTOR — that engine's knob. "auto" (the shipped value)
+# derives it from the index; any number set there is an explicit override and
+# wins, so a single engine can still be tuned by ear.
+resolve_speed() {
+  local key="$1" factor="$2" val
+  val="$(get_tuning "$key" auto)"
+  case "$val" in
+    ''|auto) awk -v s="$(get_tuning READOUT_SPEED 1.2)" -v f="$factor" 'BEGIN{printf "%.2f", s*f}' ;;
+    *)       printf '%s' "$val" ;;
+  esac
+}
+
 # Surface a one-line notice to the USER in the Claude Code transcript. The hook
 # JSON protocol shows a `systemMessage` field to the user; plain SessionStart
 # stdout, by contrast, is fed to Claude's context and never displayed. This also
@@ -862,7 +893,7 @@ speak_windows_sapi() {
   # Map the on-device rate multiplier (1.0 = normal, config default 1.3) onto
   # SAPI's -10..10 scale, clamped.
   local rate sapi_rate
-  rate="$(get_tuning TTS_RATE 1.3)"
+  rate="$(resolve_speed TTS_RATE 1.01)"
   sapi_rate="$(awk -v r="$rate" 'BEGIN{v=int((r-1)*10+0.5); if(v>10)v=10; if(v<-10)v=-10; print v}')"
 
   "$ps" -NoProfile -Command \
@@ -941,7 +972,7 @@ gen_gemini() {
   # default 1.4) sets the multiplier; 1.0/1 disables the prefix. Validate numeric
   # so a bad value can't inject arbitrary text into the prompt.
   local speed spoken="$text"
-  speed="$(get_tuning GEMINI_SPEED 1.4)"
+  speed="$(resolve_speed GEMINI_SPEED 0.83)"
   case "$speed" in ''|*[!0-9.]*) speed=1.4 ;; esac
   # Directive is in English on purpose: Gemini follows an English style prompt
   # more reliably, and it can never be mistaken for Japanese content to speak.
@@ -972,7 +1003,7 @@ gen_inworld() {
   # Japanese readouts, so the shipped default is 1.3 and it's config-tunable via
   # INWORLD_SPEAKING_RATE. Validate it's numeric before handing it to jq's
   # --argjson (a bad value would abort payload construction).
-  rate="$(get_tuning INWORLD_SPEAKING_RATE 1.3)"
+  rate="$(resolve_speed INWORLD_SPEAKING_RATE 1.11)"
   case "$rate" in ''|*[!0-9.]*) rate=1.3 ;; esac
   payload="$(jq -n --arg text "$text" --arg voice "$voice" --arg model "$model" --arg lang "$lang" --argjson rate "$rate" '{text:$text,voiceId:$voice,modelId:$model,language:$lang,audioConfig:{audioEncoding:"LINEAR16",sampleRateHertz:24000,speakingRate:$rate}}')"
   response="$(curl -sS --max-time "$(get_tuning CLOUD_HTTP_TIMEOUT 45)" "https://api.inworld.ai/tts/v1/voice" -H "Authorization: Basic ${api_key}" -H 'Content-Type: application/json' -d "$payload" 2>/dev/null)"
@@ -1012,7 +1043,7 @@ gen_elevenlabs() {
   # shifting pitch, so the voice is unchanged; it is free whenever a non-default
   # gain is set, since that pass already runs.
   gain="$(get_tuning ELEVENLABS_GAIN 1.0)"
-  tempo="$(get_tuning ELEVENLABS_ATEMPO 1.0)"
+  tempo="$(resolve_speed ELEVENLABS_ATEMPO 0.92)"
   case "$tempo" in ''|*[!0-9.]*) tempo=1.0 ;; esac
   # A single atempo filter only accepts 0.5-2.0; out-of-range would make ffmpeg
   # fail and drop us to the unprocessed audio, silently ignoring the setting.
@@ -1351,7 +1382,7 @@ speak() {
           return 0
         fi
 
-        local tts_args=(-r "$(get_tuning TTS_RATE 1.3)" -p "$(get_tuning TTS_PITCH 1.0)")
+        local tts_args=(-r "$(resolve_speed TTS_RATE 1.01)" -p "$(get_tuning TTS_PITCH 1.0)")
         [ -n "${VOICE_READOUT_TTS_ENGINE:-}" ] && tts_args+=(-e "$VOICE_READOUT_TTS_ENGINE")
         [ -n "${VOICE_READOUT_TTS_LANG:-}" ] && tts_args+=(-l "$VOICE_READOUT_TTS_LANG")
         [ -n "${VOICE_READOUT_TTS_REGION:-}" ] && tts_args+=(-n "$VOICE_READOUT_TTS_REGION")
