@@ -726,7 +726,12 @@ speak_elevenlabs() {
     return 1
   fi
 
-  local model="${VOICE_READOUT_ELEVENLABS_MODEL:-eleven_flash_v2_5}"
+  # Model is config-selectable (toggle.sh tune ELEVENLABS_MODEL <id>). Default
+  # stays the low-latency eleven_flash_v2_5; set eleven_v3 for the highest-
+  # quality / most expressive voice (slower + pricier). The env var, if set,
+  # provides the fallback default when no config value is present.
+  local model
+  model="$(get_tuning ELEVENLABS_MODEL "${VOICE_READOUT_ELEVENLABS_MODEL:-eleven_flash_v2_5}")"
   # "アマテラステラス2" (middle-aged, ja-kanto accent) — a custom voice already
   # in the account's ElevenLabs voice library, picked 2026-07-20 for a mature,
   # Japanese-native-sounding tone.
@@ -757,7 +762,25 @@ speak_elevenlabs() {
     return 1
   fi
 
-  termux-media-player play "$mp3_file" >/dev/null 2>&1
+  # Optional volume attenuation. termux-media-player has no volume flag, so
+  # cloud audio plays at ElevenLabs' master level — often louder than the
+  # on-device voice, which uses a different output path. When ELEVENLABS_GAIN is
+  # anything other than 1.0, re-encode through ffmpeg's volume filter so this
+  # backend can be made quieter (<1) or louder (>1) independently of the device
+  # media volume. Default 1.0 = untouched, so behaviour is unchanged unless set.
+  local gain play_file adj_file
+  gain="$(get_tuning ELEVENLABS_GAIN 1.0)"
+  play_file="$mp3_file"
+  if [ -n "$gain" ] && [ "$gain" != "1.0" ] && [ "$gain" != "1" ] && command -v ffmpeg >/dev/null 2>&1; then
+    adj_file="$scratch_dir/audio-$$-adj.mp3"
+    if ffmpeg -y -i "$mp3_file" -af "volume=${gain}" "$adj_file" -loglevel error 2>/dev/null && [ -s "$adj_file" ]; then
+      play_file="$adj_file"
+    else
+      log error "elevenlabs gain: ffmpeg failed (gain=${gain}), playing at original volume"
+    fi
+  fi
+
+  termux-media-player play "$play_file" >/dev/null 2>&1
 
   local waited=0
   while [ "$waited" -lt "$cap" ]; do
@@ -768,7 +791,7 @@ speak_elevenlabs() {
     fi
   done
   termux-media-player stop >/dev/null 2>&1
-  rm -f "$mp3_file"
+  rm -f "$mp3_file" "$play_file"
 
   if [ "$waited" -ge "$cap" ]; then
     log error "elevenlabs TTS playback exceeded cap (${cap}s)"
