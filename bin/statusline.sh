@@ -55,14 +55,20 @@ notif_backend="$(cfg TTS_BACKEND_NOTIFICATION)"
 [ -n "$notif_backend" ] || notif_backend="$(cfg TTS_BACKEND)"
 [ -n "$notif_backend" ] || notif_backend="ondevice"
 
+# Full mode reads verbatim; summary mode runs the response through the
+# summarizer first. Mark that difference on the line: full shows just the
+# backend (resp <icon> <backend>), summary inserts a short "sum" tag before the
+# backend (resp <icon> sum <backend>) so which mode is live is visible too.
 if [ "$(cfg READOUT_MODE)" = "full" ]; then
   resp_backend="$(cfg TTS_BACKEND_FULL)"
+  resp_mode=""
 else
   resp_backend="$(cfg TTS_BACKEND_SUMMARY)"
+  resp_mode="sum "
 fi
 [ -n "$resp_backend" ] || resp_backend="$(cfg TTS_BACKEND)"
 [ -n "$resp_backend" ] || resp_backend="ondevice"
 
-printf 'notif %s %s  resp %s %s' \
+printf 'notif %s %s  resp %s %s%s' \
   "$(icon "$(cfg NOTIFICATION_READOUT)")" "$notif_backend" \
-  "$(icon "$(cfg STOP_READOUT)")" "$resp_backend"
+  "$(icon "$(cfg STOP_READOUT)")" "$resp_mode" "$resp_backend"
