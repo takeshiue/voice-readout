@@ -79,6 +79,20 @@ is_enabled() {
   [ "$val" != "off" ]
 }
 
+# Surface a one-line notice to the USER in the Claude Code transcript. The hook
+# JSON protocol shows a `systemMessage` field to the user; plain SessionStart
+# stdout, by contrast, is fed to Claude's context and never displayed. This also
+# renders from an "async": true hook, but only once that hook process exits — so
+# callers emit it from the fast-returning hook process, never from a detached
+# worker whose stdout is already closed. No-op on empty text or if jq is missing
+# (rather than emit broken JSON that would leak into Claude's context instead).
+announce_user() {
+  local text="$1"
+  [ -n "$text" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  jq -cn --arg m "$text" '{systemMessage: $m}'
+}
+
 # "summary" (default, one sentence via Haiku) or "full" (verbatim, no LLM).
 get_readout_mode() {
   [ -f "$CONFIG_FILE" ] || { echo summary; return; }

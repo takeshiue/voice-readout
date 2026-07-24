@@ -52,8 +52,20 @@ if [ "${VOICE_READOUT_GUARD:-}" = "1" ]; then
   exit 0
 fi
 
+source "$(dirname "$0")/tts-lib.sh"
+
 INPUT_JSON="$(cat)"
 REASON="$(printf '%s' "$INPUT_JSON" | jq -r '.reason // empty' 2>/dev/null)"
+
+# Show a farewell line in the transcript (the audio is the fixed clip played by
+# the worker). Same enable + skip-on-'clear' rules as the clip, but evaluated
+# here in the fast hook process: systemMessage only surfaces from a hook Claude
+# Code is still watching, and the detached worker's stdout is closed. Sourcing
+# the lib is cheap (function defs only) and safe within the millisecond return
+# budget the worker split exists to protect.
+if is_enabled SESSION_END_GREETING && [ "$REASON" != "clear" ]; then
+  announce_user "$(get_tuning SESSION_END_GREETING_TEXT 'voice-readout、またね')"
+fi
 
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
