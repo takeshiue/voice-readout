@@ -463,6 +463,11 @@ engine_is_responsive() {
 # caller's `read -r -d ''` loop.
 split_into_speech_chunks() {
   local text="$1" max="$2"
+  # Optional 3rd arg: a smaller cap for the FIRST emitted chunk only, so a cloud
+  # readout can start speaking sooner (short first chunk = quick first audio)
+  # while later chunks stay large (fewer termux-media-player play round-trips —
+  # the dominant inter-chunk gap). Defaults to $max, i.e. uniform chunks.
+  local first_max="${3:-$max}"
   local flat
   flat="$(printf '%s' "$text" | tr '\n' ' ')"
 
@@ -511,10 +516,13 @@ split_into_speech_chunks() {
   # Pass 3: greedily re-merge consecutive short pieces back up toward $max,
   # so unrelated clauses that are individually tiny don't each get their own
   # termux-tts-speak call.
-  local chunk="" p
+  local chunk="" p emitted=0 lim
   for p in "${pieces[@]}"; do
-    if [ -n "$chunk" ] && [ $(( ${#chunk} + ${#p} )) -gt "$max" ]; then
+    # First chunk fills only to first_max; every later chunk to max.
+    [ "$emitted" -eq 0 ] && lim="$first_max" || lim="$max"
+    if [ -n "$chunk" ] && [ $(( ${#chunk} + ${#p} )) -gt "$lim" ]; then
       printf '%s\0' "$chunk"
+      emitted=1
       chunk="$p"
     else
       chunk="${chunk}${p}"
@@ -911,7 +919,21 @@ gen_gemini() {
   command -v ffmpeg >/dev/null 2>&1 || { log error "gemini backend needs ffmpeg"; return 1; }
   model="$(get_tuning GEMINI_MODEL "${VOICE_READOUT_GEMINI_MODEL:-gemini-2.5-flash-preview-tts}")"
   voice="${VOICE_READOUT_GEMINI_VOICE:-Kore}"
-  payload="$(jq -n --arg text "$text" --arg voice "$voice" '{contents:[{parts:[{text:$text}]}],generationConfig:{responseModalities:["AUDIO"],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:$voice}}}}}')"
+  # Gemini TTS has no speed parameter — its default pace is fine for reading a
+  # novel aloud but too slow for Claude Code readouts. Pace is instead steered by
+  # a natural-language directive prefixed to the prompt; the model applies it as
+  # a style and does not speak the directive itself. GEMINI_SPEED (config/env,
+  # default 1.3) sets the multiplier; 1.0/1 disables the prefix. Validate numeric
+  # so a bad value can't inject arbitrary text into the prompt.
+  local speed spoken="$text"
+  speed="$(get_tuning GEMINI_SPEED 1.3)"
+  case "$speed" in ''|*[!0-9.]*) speed=1.3 ;; esac
+  # Directive is in English on purpose: Gemini follows an English style prompt
+  # more reliably, and it can never be mistaken for Japanese content to speak.
+  if [ "$speed" != "1.0" ] && [ "$speed" != "1" ]; then
+    spoken="Read the following Japanese text aloud naturally, at about ${speed}x the normal speaking pace — noticeably faster and crisper than the default, but still clear. Do not read this instruction."$'\n\n'"${text}"
+  fi
+  payload="$(jq -n --arg text "$spoken" --arg voice "$voice" '{contents:[{parts:[{text:$text}]}],generationConfig:{responseModalities:["AUDIO"],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:$voice}}}}}')"
   response="$(curl -sS --max-time "$(get_tuning CLOUD_HTTP_TIMEOUT 45)" "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${api_key}" -H 'Content-Type: application/json' -d "$payload" 2>/dev/null)"
   audio_b64="$(printf '%s' "$response" | jq -r '.candidates[0].content.parts[0].inlineData.data // empty' 2>/dev/null)"
   [ -z "$audio_b64" ] && { log error "gemini TTS request failed: $(printf '%s' "$response" | tr -d '\n' | cut -c1-160)"; return 1; }
@@ -1078,10 +1100,16 @@ speak_cloud_chunked() {
   local backend="$1" text="$2" cap="$3"
   command -v termux-media-player >/dev/null 2>&1 || { log error "${backend}: termux-media-player not found"; return 1; }
 
-  local chunk_max chunks=() c
-  chunk_max="$(get_tuning CLOUD_CHUNK_CHARS 120)"
+  # Few, large chunks minimise the per-chunk termux-media-player play round-trip
+  # (~2–5s each) that is the dominant inter-chunk gap; the first chunk is kept
+  # small so audio still starts quickly. Generation keeps up even so (measured
+  # gen/audio <1 for every backend at these sizes, incl. Gemini once its ~6s
+  # TTFB is amortised over a big enough chunk), aided by the depth-2 prefetch.
+  local chunk_max first_max chunks=() c
+  chunk_max="$(get_tuning CLOUD_CHUNK_CHARS 200)"
+  first_max="$(get_tuning CLOUD_FIRST_CHUNK_CHARS 80)"
   while IFS= read -r -d '' c; do [ -n "$c" ] && chunks+=("$c"); done \
-    < <(split_into_speech_chunks "$text" "$chunk_max")
+    < <(split_into_speech_chunks "$text" "$chunk_max" "$first_max")
   local n=${#chunks[@]}
   [ "$n" -eq 0 ] && return 1
 
