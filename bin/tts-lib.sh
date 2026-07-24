@@ -976,6 +976,29 @@ gen_elevenlabs() {
   return 0
 }
 
+# Test only (CHUNK_MARKER on): append the boundary cue to a just-generated chunk
+# file, in place, so it plays as the tail of the SAME playback — no second media
+# player call, so no ~2s round-trip gap between the chunk and the cue. Both are
+# normalised to 24kHz mono s16 first so the concat filter accepts any backend's
+# format (gemini/inworld wav, elevenlabs mp3) and the .wav byte-length math in
+# _audio_duration stays valid. No-op unless the toggle is on. Best-effort: on any
+# ffmpeg failure the chunk is left unmarked rather than lost.
+_append_chunk_marker() {
+  local f="$1" ext tmp
+  [ "$(get_tuning CHUNK_MARKER off)" = "on" ] || return 0
+  [ -f "$CHUNK_MARKER_CLIP" ] || return 0
+  command -v ffmpeg >/dev/null 2>&1 || return 0
+  ext="${f##*.}"; tmp="${f%.*}-marked.${ext}"
+  if ffmpeg -y -i "$f" -i "$CHUNK_MARKER_CLIP" -filter_complex \
+       '[0:a]aresample=24000,aformat=sample_fmts=s16:channel_layouts=mono[a0];[1:a]aresample=24000,aformat=sample_fmts=s16:channel_layouts=mono[a1];[a0][a1]concat=n=2:v=0:a=1' \
+       "$tmp" -loglevel error 2>/dev/null && [ -s "$tmp" ]; then
+    mv -f "$tmp" "$f"
+  else
+    rm -f "$tmp"
+  fi
+  return 0
+}
+
 # gen_cloud BACKEND TEXT UID — generate one chunk's audio to the deterministic
 # path for (BACKEND, UID). Returns 0/1.
 gen_cloud() {
@@ -986,7 +1009,9 @@ gen_cloud() {
     inworld)    gen_inworld "$text" "$out" ;;
     elevenlabs) gen_elevenlabs "$text" "$out" ;;
     *)          return 1 ;;
-  esac
+  esac || return 1
+  _append_chunk_marker "$out"
+  return 0
 }
 
 # Best-effort audio length in seconds. WAV from gemini/inworld is 24kHz mono
@@ -1060,21 +1085,12 @@ speak_cloud_chunked() {
   local n=${#chunks[@]}
   [ "$n" -eq 0 ] && return 1
 
-  # Test aid: when CHUNK_MARKER is on, play a short cue clip at the END of each
-  # chunk so the split points are audible while testing. This deliberately adds a
-  # small gap per boundary (the cue itself) — that cue IS what you're listening
-  # for; production runs keep this off and stay gapless. Termux:API can only open
-  # files under the Termux scratch dir, so copy the proot-side asset in once and
-  # reuse it; the play+sleep mirrors _play_media_file (no per-play round trips).
-  local marker_dest="" marker_sleep=""
-  if [ "$(get_tuning CHUNK_MARKER off)" = "on" ] && [ -f "$CHUNK_MARKER_CLIP" ]; then
-    local _msd="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}/.voice-readout-tmp"
-    if mkdir -p "$_msd" 2>/dev/null && cp "$CHUNK_MARKER_CLIP" "$_msd/" 2>/dev/null; then
-      marker_dest="$_msd/$(basename "$CHUNK_MARKER_CLIP")"
-      local _md; _md="$(_audio_duration "$marker_dest")"
-      marker_sleep="$(awk "BEGIN{printf \"%.1f\", (${_md:-2})+0.3}")"
-    fi
-  fi
+  # Test aid: the CHUNK_MARKER cue is appended to each chunk's audio file at
+  # generation time (see gen_cloud / _append_chunk_marker), NOT played as a
+  # separate clip. A second termux-media-player call would cost its own ~2s
+  # round-trip before the cue sounds — that latency IS the gap between the chunk
+  # and the cue. Concatenating into one file removes it: the cue plays as the
+  # tail of the same playback, seamlessly. Nothing to set up here.
 
   # Per-chunk playback ceiling. A <=chunk_max-char chunk is at most ~40s of
   # speech even on the slowest-talking backend; 90s is a safe cap. Poll overhead
@@ -1149,13 +1165,6 @@ speak_cloud_chunked() {
     fi
 
     _play_media_file "$(_cloud_audio_path "$backend" "$i")" "$pcap"
-    # Audible boundary cue (test only). Played after the chunk's audio, before
-    # the next chunk, so it lands exactly on the seam. `play` supersedes the
-    # finished chunk; the sleep lets the short cue play out before the next.
-    if [ -n "$marker_dest" ]; then
-      termux-media-player play "$marker_dest" >/dev/null 2>&1
-      sleep "$marker_sleep"
-    fi
     i=$(( i + 1 ))
   done
   log spoke "${backend}-tts (pipelined, ${n} chunks)"
