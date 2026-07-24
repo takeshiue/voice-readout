@@ -554,7 +554,7 @@ speak_gemini() {
   # 20s used to be enough, but a long full-mode readout (200+ chars) can
   # legitimately take Gemini past that and curl aborts with an empty body,
   # which reads as a generic API failure — observed 2026-07-20 benchmarking.
-  response="$(curl -sS --max-time 45 \
+  response="$(curl -sS --max-time "$(get_tuning CLOUD_HTTP_TIMEOUT 45)" \
     "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${api_key}" \
     -H 'Content-Type: application/json' \
     -d "$payload" 2>/dev/null)"
@@ -653,7 +653,7 @@ speak_inworld() {
 
   # Matches the Gemini backend's cap — see the comment there for why 20s
   # wasn't enough for long full-mode readouts.
-  response="$(curl -sS --max-time 45 \
+  response="$(curl -sS --max-time "$(get_tuning CLOUD_HTTP_TIMEOUT 45)" \
     "https://api.inworld.ai/tts/v1/voice" \
     -H "Authorization: Basic ${api_key}" \
     -H 'Content-Type: application/json' \
@@ -749,7 +749,7 @@ speak_elevenlabs() {
   fi
   local mp3_file="$scratch_dir/audio-$$.mp3"
 
-  http_code="$(curl -sS --max-time 45 -w '%{http_code}' \
+  http_code="$(curl -sS --max-time "$(get_tuning CLOUD_HTTP_TIMEOUT 45)" -w '%{http_code}' \
     -X POST "https://api.elevenlabs.io/v1/text-to-speech/${voice}" \
     -H "xi-api-key: ${api_key}" \
     -H 'Content-Type: application/json' \
@@ -861,6 +861,242 @@ speak_windows_sapi() {
 # bypassed.
 STOP_SWITCH_FILE="/data/data/com.termux/files/home/.voice-readout-stopped"
 
+# ---------------------------------------------------------------------------
+# Chunked, prefetching cloud readout.
+#
+# speak_gemini/inworld/elevenlabs above each send the WHOLE text in one request,
+# so a long readout waits for the entire clip to generate before any sound comes
+# out (measured 2026-07-24: 26-50s for a ~650-char response) and long text can
+# blow CLOUD_HTTP_TIMEOUT and fail into a summary. Splitting the text into
+# sentence-bounded chunks fixes both: the first (short) chunk starts speaking in
+# a few seconds, and while each chunk plays the next is generated in the
+# background. Every measured backend generates a chunk well under its own
+# playback time (gen/audio ratio ~0.2-0.7 at 120 chars), so after the first
+# chunk playback stays continuous.
+#
+# CLOUD_CHUNK_CHARS is a baked-in default (120), chosen from those measurements
+# to work for every backend without starving. It is deliberately NOT something
+# an end user tunes: they pick a TTS backend, this picks the chunk size. The
+# gen_* helpers below are the generation halves of the speak_* functions (no
+# playback), so the pipeline can generate one chunk while playing another.
+# ---------------------------------------------------------------------------
+
+# Scratch dir both this container and Termux's media player can reach. Echoes
+# the path; non-zero if it can't be created.
+_cloud_scratch_dir() {
+  local d="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}/.voice-readout-tmp"
+  mkdir -p "$d" 2>/dev/null
+  [ -d "$d" ] || { log error "cloud backend: cannot create $d (wrong TERMUX_HOME?)"; return 1; }
+  printf '%s' "$d"
+}
+
+# Deterministic per-(backend,uid) audio path, so a backgrounded generator and
+# the foreground player agree on the filename without passing it over a pipe.
+_cloud_audio_path() {
+  local d; d="$(_cloud_scratch_dir)" || return 1
+  case "$1" in
+    elevenlabs) printf '%s/vr-%s.mp3' "$d" "$2" ;;
+    *)          printf '%s/vr-%s.wav' "$d" "$2" ;;
+  esac
+}
+
+# gen_gemini TEXT OUTFILE — produce a WAV at OUTFILE. No playback. Returns 0/1.
+gen_gemini() {
+  local text="$1" out="$2" api_key model voice payload response audio_b64 pcm
+  api_key="$(get_gemini_api_key)"
+  [ -z "$api_key" ] && { log error "gemini backend selected but no API key set"; return 1; }
+  command -v ffmpeg >/dev/null 2>&1 || { log error "gemini backend needs ffmpeg"; return 1; }
+  model="$(get_tuning GEMINI_MODEL "${VOICE_READOUT_GEMINI_MODEL:-gemini-2.5-flash-preview-tts}")"
+  voice="${VOICE_READOUT_GEMINI_VOICE:-Kore}"
+  payload="$(jq -n --arg text "$text" --arg voice "$voice" '{contents:[{parts:[{text:$text}]}],generationConfig:{responseModalities:["AUDIO"],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:$voice}}}}}')"
+  response="$(curl -sS --max-time "$(get_tuning CLOUD_HTTP_TIMEOUT 45)" "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${api_key}" -H 'Content-Type: application/json' -d "$payload" 2>/dev/null)"
+  audio_b64="$(printf '%s' "$response" | jq -r '.candidates[0].content.parts[0].inlineData.data // empty' 2>/dev/null)"
+  [ -z "$audio_b64" ] && { log error "gemini TTS request failed: $(printf '%s' "$response" | tr -d '\n' | cut -c1-160)"; return 1; }
+  pcm="${out%.wav}.pcm"
+  printf '%s' "$audio_b64" | base64 -d > "$pcm" 2>/dev/null
+  if ! ffmpeg -y -f s16le -ar 24000 -ac 1 -i "$pcm" "$out" -loglevel error 2>/dev/null; then
+    log error "gemini TTS: ffmpeg failed to build wav"; rm -f "$pcm" "$out"; return 1
+  fi
+  rm -f "$pcm"; return 0
+}
+
+# gen_inworld TEXT OUTFILE — produce a WAV at OUTFILE. Returns 0/1.
+gen_inworld() {
+  local text="$1" out="$2" api_key model voice lang rate payload response audio_b64
+  api_key="$(get_inworld_api_key)"
+  [ -z "$api_key" ] && { log error "inworld backend selected but no API key set"; return 1; }
+  model="$(get_tuning INWORLD_MODEL "${VOICE_READOUT_INWORLD_MODEL:-inworld-tts-1.5-mini}")"
+  voice="${VOICE_READOUT_INWORLD_VOICE:-Olivia}"
+  lang="${VOICE_READOUT_INWORLD_LANG:-ja}"
+  # speakingRate: 0.5-1.5 (1.0 = native). Inworld's native pace runs slow for
+  # Japanese readouts, so the shipped default is 1.3 and it's config-tunable via
+  # INWORLD_SPEAKING_RATE. Validate it's numeric before handing it to jq's
+  # --argjson (a bad value would abort payload construction).
+  rate="$(get_tuning INWORLD_SPEAKING_RATE 1.3)"
+  case "$rate" in ''|*[!0-9.]*) rate=1.3 ;; esac
+  payload="$(jq -n --arg text "$text" --arg voice "$voice" --arg model "$model" --arg lang "$lang" --argjson rate "$rate" '{text:$text,voiceId:$voice,modelId:$model,language:$lang,audioConfig:{audioEncoding:"LINEAR16",sampleRateHertz:24000,speakingRate:$rate}}')"
+  response="$(curl -sS --max-time "$(get_tuning CLOUD_HTTP_TIMEOUT 45)" "https://api.inworld.ai/tts/v1/voice" -H "Authorization: Basic ${api_key}" -H 'Content-Type: application/json' -d "$payload" 2>/dev/null)"
+  audio_b64="$(printf '%s' "$response" | jq -r '.audioContent // empty' 2>/dev/null)"
+  [ -z "$audio_b64" ] && { log error "inworld TTS request failed: $(printf '%s' "$response" | tr -d '\n' | cut -c1-160)"; return 1; }
+  printf '%s' "$audio_b64" | base64 -d > "$out" 2>/dev/null
+  [ -s "$out" ] || { log error "inworld TTS: empty decode"; rm -f "$out"; return 1; }
+  return 0
+}
+
+# gen_elevenlabs TEXT OUTFILE — produce an MP3 at OUTFILE (ELEVENLABS_GAIN
+# applied when set). Returns 0/1.
+gen_elevenlabs() {
+  local text="$1" out="$2" api_key model voice speed payload http gain raw
+  api_key="$(get_elevenlabs_api_key)"
+  [ -z "$api_key" ] && { log error "elevenlabs backend selected but no API key set"; return 1; }
+  model="$(get_tuning ELEVENLABS_MODEL "${VOICE_READOUT_ELEVENLABS_MODEL:-eleven_flash_v2_5}")"
+  voice="${VOICE_READOUT_ELEVENLABS_VOICE:-blVzlvngVR9lhf4Gflnk}"
+  # speed via voice_settings (1.0 = normal), config-tunable via ELEVENLABS_SPEED.
+  # Measured limits (2026-07-24): eleven_v3 IGNORES speed entirely; flash/v2/turbo
+  # honour it but only within 0.7-1.2 (out-of-range 400s and falls back). Default
+  # 1.0 is safe for every model. Validate numeric for jq's --argjson.
+  speed="$(get_tuning ELEVENLABS_SPEED 1.0)"
+  case "$speed" in ''|*[!0-9.]*) speed=1.0 ;; esac
+  payload="$(jq -n --arg text "$text" --arg model "$model" --argjson speed "$speed" '{text:$text, model_id:$model, voice_settings:{speed:$speed}}')"
+  raw="${out%.mp3}-raw.mp3"
+  http="$(curl -sS --max-time "$(get_tuning CLOUD_HTTP_TIMEOUT 45)" -w '%{http_code}' -X POST "https://api.elevenlabs.io/v1/text-to-speech/${voice}" -H "xi-api-key: ${api_key}" -H 'Content-Type: application/json' -d "$payload" -o "$raw" 2>/dev/null)"
+  if [ "$http" != "200" ] || [ ! -s "$raw" ]; then
+    log error "elevenlabs TTS request failed (http ${http}): $(head -c 160 "$raw" 2>/dev/null | tr -d '\n')"; rm -f "$raw"; return 1
+  fi
+  gain="$(get_tuning ELEVENLABS_GAIN 1.0)"
+  if [ -n "$gain" ] && [ "$gain" != "1.0" ] && [ "$gain" != "1" ] && command -v ffmpeg >/dev/null 2>&1 \
+     && ffmpeg -y -i "$raw" -af "volume=${gain}" "$out" -loglevel error 2>/dev/null && [ -s "$out" ]; then
+    rm -f "$raw"
+  else
+    mv -f "$raw" "$out"
+  fi
+  return 0
+}
+
+# gen_cloud BACKEND TEXT UID — generate one chunk's audio to the deterministic
+# path for (BACKEND, UID). Returns 0/1.
+gen_cloud() {
+  local backend="$1" text="$2" uid="$3" out
+  out="$(_cloud_audio_path "$backend" "$uid")" || return 1
+  case "$backend" in
+    gemini)     gen_gemini "$text" "$out" ;;
+    inworld)    gen_inworld "$text" "$out" ;;
+    elevenlabs) gen_elevenlabs "$text" "$out" ;;
+    *)          return 1 ;;
+  esac
+}
+
+# Best-effort audio length in seconds. WAV from gemini/inworld is 24kHz mono
+# 16-bit = 48000 bytes/sec, so bytes/48000 is exact and cheap (and ffprobe often
+# can't read Inworld's streamed WAV header anyway). MP3 from elevenlabs needs
+# ffprobe. Prints nothing if it can't tell.
+_audio_duration() {
+  local f="$1" bytes
+  case "$f" in
+    *.wav)
+      bytes="$(wc -c < "$f" 2>/dev/null)" || return
+      [ -n "$bytes" ] && [ "$bytes" -gt 44 ] 2>/dev/null && awk "BEGIN{printf \"%.1f\", ($bytes-44)/48000}"
+      ;;
+    *.mp3)
+      command -v ffprobe >/dev/null 2>&1 || return
+      ffprobe -v error -show_entries format=duration -of default=nk=1:np=1 "$f" 2>/dev/null
+      ;;
+  esac
+}
+
+# Play a file via the Termux media player and return once it has finished, then
+# delete it. We know each chunk's exact length (see _audio_duration), so we
+# sleep for that instead of polling `termux-media-player info`: each info call
+# is a ~2-3s Termux:API round-trip, so polling over-ran the true end by ~5s and
+# that dead air was the gap heard between chunks (measured 2026-07-24). The
+# margin covers the player's start-up latency so the tail isn't clipped. Falls
+# back to polling only when the duration can't be determined.
+_play_media_file() {
+  local file="$1" cap="$2" dur
+  dur="$(_audio_duration "$file")"
+  termux-media-player play "$file" >/dev/null 2>&1
+  if [ -n "$dur" ]; then
+    sleep "$(awk "BEGIN{d=$dur+1.5; if(d>$cap)d=$cap; printf \"%.1f\", d}")"
+    # No stop: after the sleep the clip has ended on its own, and the next
+    # chunk's `play` supersedes an idle player. Skipping the ~2s
+    # termux-media-player stop round-trip is what keeps the seam tight.
+  else
+    local waited=0
+    while [ "$waited" -lt "$cap" ]; do
+      sleep 1
+      waited=$(( waited + 1 ))
+      termux-media-player info 2>/dev/null | grep -q 'Status: Playing' || break
+    done
+    termux-media-player stop >/dev/null 2>&1
+  fi
+  rm -f "$file"
+  return 0
+}
+
+# speak_cloud_chunked BACKEND TEXT CAP — sentence-chunk the text and read it with
+# the next chunk generating in the background while the current one plays.
+# Returns 0 if it spoke everything (or was stopped mid-way), 1 only if the very
+# first chunk could not be generated, so the caller can fall back to ondevice.
+speak_cloud_chunked() {
+  local backend="$1" text="$2" cap="$3"
+  command -v termux-media-player >/dev/null 2>&1 || { log error "${backend}: termux-media-player not found"; return 1; }
+
+  local chunk_max chunks=() c
+  chunk_max="$(get_tuning CLOUD_CHUNK_CHARS 120)"
+  while IFS= read -r -d '' c; do [ -n "$c" ] && chunks+=("$c"); done \
+    < <(split_into_speech_chunks "$text" "$chunk_max")
+  local n=${#chunks[@]}
+  [ "$n" -eq 0 ] && return 1
+
+  # Per-chunk playback ceiling. A <=chunk_max-char chunk is at most ~40s of
+  # speech even on the slowest-talking backend; 90s is a safe cap. Poll overhead
+  # (each `info` is a Termux:API round-trip) makes `waited` undercount wall time,
+  # so this only trips on a genuinely stuck player.
+  local pcap=90
+
+  # First chunk is generated synchronously — the only wait the listener sees,
+  # kept short by CLOUD_CHUNK_CHARS. A failure here lets the caller fall back.
+  if ! gen_cloud "$backend" "${chunks[0]}" 0; then
+    log error "${backend} pipeline: first chunk failed to generate, falling back"
+    return 1
+  fi
+
+  local i=0
+  while [ "$i" -lt "$n" ]; do
+    # Stop switch re-checked at every boundary, like the ondevice loop, so a
+    # mid-readout 停止 drops the remaining chunks instead of playing on.
+    if [ -e "$STOP_SWITCH_FILE" ]; then
+      log skip "読み上げ停止中 (stop switch, ${i}/${n} chunks spoken)"
+      rm -f "$(_cloud_audio_path "$backend" "$i")"
+      return 0
+    fi
+    # Prefetch the next chunk in the background while this one plays. Generation
+    # (network + ffmpeg) and playback (media player) are separate resources, so
+    # they don't collide; only one file plays at a time.
+    local gen_pid=""
+    if [ "$(( i + 1 ))" -lt "$n" ]; then
+      gen_cloud "$backend" "${chunks[$(( i + 1 ))]}" "$(( i + 1 ))" &
+      gen_pid=$!
+    fi
+    _play_media_file "$(_cloud_audio_path "$backend" "$i")" "$pcap"
+    if [ -n "$gen_pid" ] && ! wait "$gen_pid"; then
+      # Next chunk didn't generate — speak the rest on-device rather than drop
+      # it, then stop the cloud pipeline. Each chunk is <=chunk_max (<240) so the
+      # ondevice ceiling won't force a summary.
+      log fallback "${backend} pipeline: chunk $(( i + 1 )) failed, remaining via ondevice"
+      local j
+      for (( j = i + 1; j < n; j++ )); do
+        [ -e "$STOP_SWITCH_FILE" ] && break
+        VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 speak "${chunks[$j]}" "$pcap" ""
+      done
+      return 0
+    fi
+    i=$(( i + 1 ))
+  done
+  log spoke "${backend}-tts (pipelined, ${n} chunks)"
+  return 0
+}
+
 speak() {
   # Checked first, before the config, before the enable toggles, before the
   # backend is even resolved. Anything that reads configuration can be
@@ -878,27 +1114,17 @@ speak() {
   # Empty is allowed and just means "use the global setting".
   local fn="${3:-}"
   case "$(get_tts_backend "$fn")" in
-    gemini)
-      if speak_gemini "$text" "$cap"; then
+    gemini|inworld|elevenlabs)
+      # All cloud backends go through the chunked, prefetching pipeline (see
+      # speak_cloud_chunked). It sentence-splits long text so the first chunk
+      # speaks within seconds and the rest generate while earlier chunks play;
+      # short text stays a single request. On a hard failure it returns 1 and we
+      # fall back to ondevice, exactly as the per-backend calls used to.
+      local _cloud_backend; _cloud_backend="$(get_tts_backend "$fn")"
+      if speak_cloud_chunked "$_cloud_backend" "$text" "$cap"; then
         clear_failure_notifications
       else
-        log fallback "gemini backend failed, retrying via ondevice"
-        VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 speak "$text" "$cap" "$fn"
-      fi
-      ;;
-    inworld)
-      if speak_inworld "$text" "$cap"; then
-        clear_failure_notifications
-      else
-        log fallback "inworld backend failed, retrying via ondevice"
-        VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 speak "$text" "$cap" "$fn"
-      fi
-      ;;
-    elevenlabs)
-      if speak_elevenlabs "$text" "$cap"; then
-        clear_failure_notifications
-      else
-        log fallback "elevenlabs backend failed, retrying via ondevice"
+        log fallback "${_cloud_backend} backend failed, retrying via ondevice"
         VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 speak "$text" "$cap" "$fn"
       fi
       ;;

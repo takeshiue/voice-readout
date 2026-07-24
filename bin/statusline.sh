@@ -46,15 +46,23 @@ fi
 # ON -> speaker with sound, OFF -> muted speaker. Only "off" is off.
 icon() { [ "$1" = "off" ] && printf '🔇' || printf '🔊'; }
 
-# Which backend the response readout uses depends on the mode: full mode speaks
-# via TTS_BACKEND_FULL, summary mode via TTS_BACKEND_SUMMARY. Fall back to the
-# global TTS_BACKEND, then to ondevice (the shipped default).
-if [ "$(cfg READOUT_MODE)" = "full" ]; then
-  backend="$(cfg TTS_BACKEND_FULL)"
-else
-  backend="$(cfg TTS_BACKEND_SUMMARY)"
-fi
-[ -n "$backend" ] || backend="$(cfg TTS_BACKEND)"
-[ -n "$backend" ] || backend="ondevice"
+# Each readout function can use a different backend, so show each one's backend
+# next to its own icon — the backend NAME (gemini/inworld/elevenlabs/ondevice),
+# not the full model string. Notifications use TTS_BACKEND_NOTIFICATION; the
+# response uses TTS_BACKEND_FULL or _SUMMARY depending on the mode. Both fall
+# back to the global TTS_BACKEND, then to ondevice (the shipped default).
+notif_backend="$(cfg TTS_BACKEND_NOTIFICATION)"
+[ -n "$notif_backend" ] || notif_backend="$(cfg TTS_BACKEND)"
+[ -n "$notif_backend" ] || notif_backend="ondevice"
 
-printf 'notif %s  resp %s %s' "$(icon "$(cfg NOTIFICATION_READOUT)")" "$(icon "$(cfg STOP_READOUT)")" "$backend"
+if [ "$(cfg READOUT_MODE)" = "full" ]; then
+  resp_backend="$(cfg TTS_BACKEND_FULL)"
+else
+  resp_backend="$(cfg TTS_BACKEND_SUMMARY)"
+fi
+[ -n "$resp_backend" ] || resp_backend="$(cfg TTS_BACKEND)"
+[ -n "$resp_backend" ] || resp_backend="ondevice"
+
+printf 'notif %s %s  resp %s %s' \
+  "$(icon "$(cfg NOTIFICATION_READOUT)")" "$notif_backend" \
+  "$(icon "$(cfg STOP_READOUT)")" "$resp_backend"
