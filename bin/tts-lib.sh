@@ -923,11 +923,11 @@ gen_gemini() {
   # novel aloud but too slow for Claude Code readouts. Pace is instead steered by
   # a natural-language directive prefixed to the prompt; the model applies it as
   # a style and does not speak the directive itself. GEMINI_SPEED (config/env,
-  # default 1.3) sets the multiplier; 1.0/1 disables the prefix. Validate numeric
+  # default 1.4) sets the multiplier; 1.0/1 disables the prefix. Validate numeric
   # so a bad value can't inject arbitrary text into the prompt.
   local speed spoken="$text"
-  speed="$(get_tuning GEMINI_SPEED 1.3)"
-  case "$speed" in ''|*[!0-9.]*) speed=1.3 ;; esac
+  speed="$(get_tuning GEMINI_SPEED 1.4)"
+  case "$speed" in ''|*[!0-9.]*) speed=1.4 ;; esac
   # Directive is in English on purpose: Gemini follows an English style prompt
   # more reliably, and it can never be mistaken for Japanese content to speak.
   if [ "$speed" != "1.0" ] && [ "$speed" != "1" ]; then
