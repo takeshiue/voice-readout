@@ -986,7 +986,7 @@ gen_inworld() {
 # gen_elevenlabs TEXT OUTFILE — produce an MP3 at OUTFILE (ELEVENLABS_GAIN
 # applied when set). Returns 0/1.
 gen_elevenlabs() {
-  local text="$1" out="$2" api_key model voice speed payload http gain raw
+  local text="$1" out="$2" api_key model voice speed payload http gain tempo filters raw
   api_key="$(get_elevenlabs_api_key)"
   [ -z "$api_key" ] && { log error "elevenlabs backend selected but no API key set"; return 1; }
   model="$(get_tuning ELEVENLABS_MODEL "${VOICE_READOUT_ELEVENLABS_MODEL:-eleven_flash_v2_5}")"
@@ -1003,9 +1003,27 @@ gen_elevenlabs() {
   if [ "$http" != "200" ] || [ ! -s "$raw" ]; then
     log error "elevenlabs TTS request failed (http ${http}): $(head -c 160 "$raw" 2>/dev/null | tr -d '\n')"; rm -f "$raw"; return 1
   fi
+  # Post-process volume and speed in ONE ffmpeg pass. Speed lives here, not in
+  # the request, because eleven_v3 ignores voice_settings.speed outright:
+  # measured 2026-07-25 on this device, 1.0/1.2/1.4 all returned 8.67/8.67/8.36s
+  # for the same sentence (within run-to-run noise) — and unlike flash_v2_5,
+  # which honours speed and rejects anything outside 0.7-1.2 with a 400, v3
+  # accepts the value and silently drops it. atempo changes tempo without
+  # shifting pitch, so the voice is unchanged; it is free whenever a non-default
+  # gain is set, since that pass already runs.
   gain="$(get_tuning ELEVENLABS_GAIN 1.0)"
-  if [ -n "$gain" ] && [ "$gain" != "1.0" ] && [ "$gain" != "1" ] && command -v ffmpeg >/dev/null 2>&1 \
-     && ffmpeg -y -i "$raw" -af "volume=${gain}" "$out" -loglevel error 2>/dev/null && [ -s "$out" ]; then
+  tempo="$(get_tuning ELEVENLABS_ATEMPO 1.0)"
+  case "$tempo" in ''|*[!0-9.]*) tempo=1.0 ;; esac
+  # A single atempo filter only accepts 0.5-2.0; out-of-range would make ffmpeg
+  # fail and drop us to the unprocessed audio, silently ignoring the setting.
+  case "$(awk -v t="$tempo" 'BEGIN{print (t>=0.5 && t<=2.0) ? "ok" : "bad"}')" in
+    bad) log error "ELEVENLABS_ATEMPO=${tempo} out of range (0.5-2.0), ignoring"; tempo=1.0 ;;
+  esac
+  filters=""
+  case "$gain" in  ''|1|1.0|1.00) ;; *) filters="volume=${gain}" ;; esac
+  case "$tempo" in ''|1|1.0|1.00) ;; *) filters="${filters:+${filters},}atempo=${tempo}" ;; esac
+  if [ -n "$filters" ] && command -v ffmpeg >/dev/null 2>&1 \
+     && ffmpeg -y -i "$raw" -af "$filters" "$out" -loglevel error 2>/dev/null && [ -s "$out" ]; then
     rm -f "$raw"
   else
     mv -f "$raw" "$out"
