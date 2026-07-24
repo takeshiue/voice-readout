@@ -1033,8 +1033,17 @@ _play_media_file() {
   return 0
 }
 
-# speak_cloud_chunked BACKEND TEXT CAP — sentence-chunk the text and read it with
-# the next chunk generating in the background while the current one plays.
+# speak_cloud_chunked BACKEND TEXT CAP — sentence-chunk the text and read it while
+# a rolling buffer of chunks generates ahead in the background.
+#
+# Prefetch depth is PREFETCH_DEPTH chunks: while chunk i plays, chunks i+1..i+D
+# are already generating (or done). Because a chunk generates faster than it
+# plays (gen/audio ~0.2-0.7), that buffer *fills up* during playback, so after
+# the first chunk the seams between later chunks are essentially gap-free — the
+# longer the text, the smoother it gets. Depth 2 is the sweet spot for Inworld;
+# raise it for a backend whose generation is slower relative to playback, at the
+# cost of that many parallel API calls in flight.
+#
 # Returns 0 if it spoke everything (or was stopped mid-way), 1 only if the very
 # first chunk could not be generated, so the caller can fall back to ondevice.
 speak_cloud_chunked() {
@@ -1048,49 +1057,88 @@ speak_cloud_chunked() {
   local n=${#chunks[@]}
   [ "$n" -eq 0 ] && return 1
 
+  # Test aid: when CHUNK_MARKER is on, prefix each chunk with a short spoken
+  # marker so the boundaries are audible (you only hear the audio, not the split
+  # points). Applied AFTER splitting so it never shifts the chunk boundaries, and
+  # kept tiny + uncommon-in-speech so it barely affects timing. Default off.
+  if [ "$(get_tuning CHUNK_MARKER off)" = "on" ]; then
+    local mark="ピッ、" mi
+    for mi in "${!chunks[@]}"; do chunks[$mi]="${mark}${chunks[$mi]}"; done
+  fi
+
   # Per-chunk playback ceiling. A <=chunk_max-char chunk is at most ~40s of
   # speech even on the slowest-talking backend; 90s is a safe cap. Poll overhead
   # (each `info` is a Termux:API round-trip) makes `waited` undercount wall time,
   # so this only trips on a genuinely stuck player.
   local pcap=90
 
-  # First chunk is generated synchronously — the only wait the listener sees,
-  # kept short by CLOUD_CHUNK_CHARS. A failure here lets the caller fall back.
-  if ! gen_cloud "$backend" "${chunks[0]}" 0; then
-    log error "${backend} pipeline: first chunk failed to generate, falling back"
-    return 1
-  fi
+  local prefetch=2   # in-flight lookahead buffer; see the header comment.
+
+  # gen_pid[k] = background PID generating chunk k (once launched). Sparse.
+  local -a gen_pid=()
+
+  # Seed the buffer: chunk 0 plus PREFETCH chunks ahead, all generating in
+  # parallel from the start. Chunk 0's own generation is the only wait the
+  # listener sees before the first sound.
+  local k
+  for (( k = 0; k <= prefetch && k < n; k++ )); do
+    gen_cloud "$backend" "${chunks[$k]}" "$k" &
+    gen_pid[$k]=$!
+  done
 
   local i=0
   while [ "$i" -lt "$n" ]; do
     # Stop switch re-checked at every boundary, like the ondevice loop, so a
-    # mid-readout 停止 drops the remaining chunks instead of playing on.
+    # mid-readout 停止 drops the remaining chunks instead of playing on. Reap the
+    # still-running generators first so they don't leak past the readout.
     if [ -e "$STOP_SWITCH_FILE" ]; then
       log skip "読み上げ停止中 (stop switch, ${i}/${n} chunks spoken)"
-      rm -f "$(_cloud_audio_path "$backend" "$i")"
+      local p
+      for (( p = i; p < n; p++ )); do
+        [ -n "${gen_pid[$p]:-}" ] && wait "${gen_pid[$p]}" 2>/dev/null
+        rm -f "$(_cloud_audio_path "$backend" "$p")"
+      done
       return 0
     fi
-    # Prefetch the next chunk in the background while this one plays. Generation
-    # (network + ffmpeg) and playback (media player) are separate resources, so
-    # they don't collide; only one file plays at a time.
-    local gen_pid=""
-    if [ "$(( i + 1 ))" -lt "$n" ]; then
-      gen_cloud "$backend" "${chunks[$(( i + 1 ))]}" "$(( i + 1 ))" &
-      gen_pid=$!
-    fi
-    _play_media_file "$(_cloud_audio_path "$backend" "$i")" "$pcap"
-    if [ -n "$gen_pid" ] && ! wait "$gen_pid"; then
-      # Next chunk didn't generate — speak the rest on-device rather than drop
-      # it, then stop the cloud pipeline. Each chunk is <=chunk_max (<240) so the
-      # ondevice ceiling won't force a summary.
-      log fallback "${backend} pipeline: chunk $(( i + 1 )) failed, remaining via ondevice"
+
+    # Wait for chunk i (its generator was launched earlier) and check it worked.
+    if [ -z "${gen_pid[$i]:-}" ] || ! wait "${gen_pid[$i]}"; then
+      if [ "$i" -eq 0 ]; then
+        # Nothing spoken yet — let the caller retry the whole text on ondevice.
+        log error "${backend} pipeline: first chunk failed to generate, falling back"
+        local p
+        for (( p = 1; p < n; p++ )); do
+          [ -n "${gen_pid[$p]:-}" ] && wait "${gen_pid[$p]}" 2>/dev/null
+          rm -f "$(_cloud_audio_path "$backend" "$p")"
+        done
+        return 1
+      fi
+      # A later chunk failed — speak the rest on-device rather than drop it. Each
+      # chunk is <=chunk_max (<240) so the ondevice ceiling won't force a summary.
+      log fallback "${backend} pipeline: chunk ${i} failed, remaining via ondevice"
+      local p
+      for (( p = i + 1; p < n; p++ )); do
+        [ -n "${gen_pid[$p]:-}" ] && wait "${gen_pid[$p]}" 2>/dev/null
+        rm -f "$(_cloud_audio_path "$backend" "$p")"
+      done
       local j
-      for (( j = i + 1; j < n; j++ )); do
+      for (( j = i; j < n; j++ )); do
         [ -e "$STOP_SWITCH_FILE" ] && break
         VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 speak "${chunks[$j]}" "$pcap" ""
       done
       return 0
     fi
+
+    # Top up the lookahead so the buffer keeps filling while this chunk plays.
+    # Generation (network + ffmpeg) and playback (media player) are separate
+    # resources, so they don't collide; only one file plays at a time.
+    local ahead=$(( i + prefetch ))
+    if [ "$ahead" -lt "$n" ] && [ -z "${gen_pid[$ahead]:-}" ]; then
+      gen_cloud "$backend" "${chunks[$ahead]}" "$ahead" &
+      gen_pid[$ahead]=$!
+    fi
+
+    _play_media_file "$(_cloud_audio_path "$backend" "$i")" "$pcap"
     i=$(( i + 1 ))
   done
   log spoke "${backend}-tts (pipelined, ${n} chunks)"

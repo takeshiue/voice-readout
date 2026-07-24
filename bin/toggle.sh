@@ -2,7 +2,7 @@
 # Flips a voice-readout setting. Meant to be run by Claude when the user asks
 # in chat ("音声読み上げをオフにして" / "フル読み上げにして" etc).
 #
-# Usage: toggle.sh <stop|notification|all|greeting|farewell|overflow-pipeline> <on|off>
+# Usage: toggle.sh <stop|notification|all|greeting|farewell|overflow-pipeline|chunk-marker> <on|off>
 #        toggle.sh mode <summary|full>
 #        toggle.sh persona <on|off>
 #        toggle.sh backend <ondevice|gemini|inworld|elevenlabs>
@@ -55,7 +55,7 @@ PERSONA_PRESET="$PLUGIN_DIR/personas/persona.md"
 ENV_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout.env"
 
 usage() {
-  echo "Usage: $0 <stop|notification|all|greeting|farewell|overflow-pipeline> <on|off>" >&2
+  echo "Usage: $0 <stop|notification|all|greeting|farewell|overflow-pipeline|chunk-marker> <on|off>" >&2
   echo "       $0 mode <summary|full>" >&2
   echo "       $0 persona <on|off>" >&2
   echo "       $0 backend <ondevice|gemini|inworld|elevenlabs>" >&2
@@ -168,7 +168,7 @@ case "$TARGET" in
     cat "$CONFIG_FILE"
     exit 0
     ;;
-  stop|notification|all|greeting|farewell|overflow-pipeline)
+  stop|notification|all|greeting|farewell|overflow-pipeline|chunk-marker)
     case "$STATE" in on|off) ;; *) usage ;; esac
     case "$TARGET" in
       stop) set_key STOP_READOUT "$STATE" ;;
@@ -180,6 +180,9 @@ case "$TARGET" in
       # Experimental: read the opening verbatim while summarizing in the
       # background, so a long readout starts immediately. Default off.
       overflow-pipeline) set_key OVERFLOW_PIPELINE "$STATE" ;;
+      # Test aid: prefix each cloud chunk with a short spoken marker so the
+      # chunk boundaries are audible. Default off — turn on only while testing.
+      chunk-marker) set_key CHUNK_MARKER "$STATE" ;;
       all)
         set_key STOP_READOUT "$STATE"
         set_key NOTIFICATION_READOUT "$STATE"
