@@ -64,7 +64,7 @@ REASON="$(printf '%s' "$INPUT_JSON" | jq -r '.reason // empty' 2>/dev/null)"
 # the lib is cheap (function defs only) and safe within the millisecond return
 # budget the worker split exists to protect.
 if is_enabled SESSION_END_GREETING && [ "$REASON" != "clear" ]; then
-  announce_user "$(get_tuning SESSION_END_GREETING_TEXT 'voice-readout、またね')"
+  announce_user "$(get_tuning SESSION_END_GREETING_TEXT 'ボイスリードアウト、またね')"
 fi
 
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"

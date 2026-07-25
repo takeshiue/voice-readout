@@ -145,13 +145,13 @@ case "$TARGET" in
     # Spoken once at session start (SessionStart hook) so the user can hear
     # immediately whether the readout path works. Text is configurable.
     add_default STARTUP_GREETING on
-    add_default STARTUP_GREETING_TEXT voice-readout、準備できたよ
+    add_default STARTUP_GREETING_TEXT ボイスリードアウト、準備できたよ
     # Played once at session end (SessionEnd hook): a fixed farewell clip
     # (assets/session-end.wav), not live TTS. On by default.
     add_default SESSION_END_GREETING on
     # Text shown in the transcript at session end (the audio stays the fixed
     # clip). Displayed only; not spoken.
-    add_default SESSION_END_GREETING_TEXT voice-readout、またね
+    add_default SESSION_END_GREETING_TEXT ボイスリードアウト、またね
     # One engine per function, each the user's own choice. All default to
     # ondevice: no API key, no network, speaks immediately.
     add_default TTS_BACKEND ondevice

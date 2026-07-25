@@ -53,7 +53,7 @@ case "$SOURCE" in
     ;;
 esac
 
-GREETING="$(get_tuning STARTUP_GREETING_TEXT 'voice-readout、準備できたよ')"
+GREETING="$(get_tuning STARTUP_GREETING_TEXT 'ボイスリードアウト、準備できたよ')"
 
 log greeting "session ${SOURCE}: ${GREETING}"
 
