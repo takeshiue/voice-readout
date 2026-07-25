@@ -6,7 +6,7 @@ Claude Code のやり取りを、画面を見なくても声で追えるよう�
 
 - [できること](#できること)
 - [動作環境（構成）](#動作環境構成) — 入れる前に読む
-- [インストール方法](#インストール方法)
+- [インストール方法](#インストール方法) / [アンインストール](#アンインストール)
 - [使えるオプション](#使えるオプション) — 日々の操作はここ
 - [ステータスライン](#ステータスライン今の状態を一目で見る)
 - [起動時の挨拶](#起動時の挨拶動作確認) / [終了時の挨拶](#終了時の挨拶)
@@ -123,6 +123,60 @@ git clone https://github.com/takeshiue/voice-readout.git
 バッテリー最適化でアプリがバックグラウンド終了されるとハングの原因になるため、**Termux:API と Google 音声サービスの両方を「バッテリー使用量→制限なし」に設定しておく**ことを推奨する（設定→アプリ→各アプリ→バッテリー使用量）。
 
 ステータスライン（今どの機能がオンかの常時表示）を使う場合は、別途 `settings.json` への登録が必要 → [ステータスライン](#ステータスライン今の状態を一目で見る)
+
+### アンインストール
+
+このプラグインは Android 側と proot 側の**両方**に置き土産をするので、プラグインを消しただけでは終わらない。特に**常駐通知は `--ongoing`（スワイプで消せない）**ので、順番を守って消す。
+
+**1. 通知を先に消す**（Termux 側で実行）
+
+先にプラグインを消すと、通知のボタンが存在しないスクリプトを叩く状態で画面に残り続ける。ここが最初。
+
+```sh
+termux-notification-remove voice-readout-switch   # ストップスイッチのボタン
+termux-notification-remove voice-readout-fix      # 故障時の復旧手順（出ていれば）
+termux-wake-unlock                                # 読み上げ中に取ったロックが残っていれば
+```
+
+**2. プラグインを外す**
+
+Claude Code の中からなら：
+
+```
+/plugin uninstall voice-readout@voice-readout
+/plugin marketplace remove voice-readout
+```
+
+ターミナルからでも同じことができる（Claude Code を起動せずに片付けたいとき）：
+
+```sh
+claude plugin uninstall voice-readout@voice-readout
+claude plugin marketplace remove voice-readout
+```
+
+ステータスラインを登録していた場合は、`~/.claude/settings.json` から `statusLine` の行を手で消す（プラグインの管理外なので自動では消えない）。
+
+**3. 設定・鍵・ログを消す**（proot 側で実行）
+
+```sh
+rm -rf ~/.claude/plugins/data/voice-readout-voice-readout/
+```
+
+このディレクトリには **API キー（`voice-readout.env`）と、応答の要約が入ったログ**が入っている。消し忘れると鍵がそのまま残る。
+
+**4. Termux 側に残るものを消す**（Termux 側で実行）
+
+```sh
+rm -f  ~/.voice-readout-stopped      # ストップスイッチの状態ファイル
+rm -f  ~/.voice-readout-switch.sh    # 通知ボタンが叩く小スクリプト
+rm -rf ~/.voice-readout-tmp/         # 再生用の音声一時ファイル（数MB〜十数MB溜まる）
+```
+
+`~/.voice-readout-tmp/` は読み上げのたびに音声ファイルを置く場所で、**チャンク音声（`vr-*`）以外は自動削除されない**ため、使っているうちに溜まる。アンインストールしないまま容量だけ空けたい場合も、ここを消せばよい（次の読み上げで必要なものは再生成される）。
+
+**5. API キーは発行元でも失効させる**
+
+ローカルのファイルを消しても、キー自体は生きている。使わなくなったキーは各サービスのダッシュボード（Google AI Studio / Inworld Portal / ElevenLabs）で削除しておく。
 
 ## 使えるオプション
 
