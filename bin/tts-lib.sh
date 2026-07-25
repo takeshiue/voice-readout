@@ -757,6 +757,52 @@ split_into_speech_chunks() {
   [ -n "$chunk" ] && printf '%s\0' "$chunk"
 }
 
+# POST JSON to a cloud TTS API without putting the API key — or the text being
+# read aloud — on the command line.
+#
+# A process's arguments are world-readable through /proc/<pid>/cmdline (mode
+# 444), so `curl -H "xi-api-key: $key"` published the key to every process on
+# the device for the length of the request, and `-d "$payload"` did the same
+# for the response text about to be spoken (both verified 2026-07-25 by
+# snapshotting ps mid-request). File permissions cannot help with this: the
+# exposure is in the process table, not on disk.
+#
+# curl reads options from stdin with `--config -`, and nothing read there ever
+# reaches argv. The request body goes through a 0600 temp file for the same
+# reason. Gemini's key moves from the URL query string into a header at the
+# same time — a URL is additionally logged by proxies and servers, which is
+# why Google documents the header form.
+#
+# Values in a curl config file are quoted, and inside those quotes curl treats
+# \ and " as escapes — so both are escaped here. Without that, a key
+# containing either arrives truncated (verified against a local server: a test
+# key was cut at its first quote).
+#
+# cloud_post URL AUTH_HEADER PAYLOAD OUTFILE
+#   Response body to OUTFILE, HTTP status code to stdout, curl's exit status
+#   as the return value.
+cloud_post() {
+  local url="$1" auth="$2" payload="$3" out="$4" body esc rc
+  # Prefer the plugin's own 0700 data dir over a shared /tmp; fall back only if
+  # that is somehow unusable, since failing here would silence the readout.
+  body="$(mktemp "${PLUGIN_DATA_DIR}/vr-req.XXXXXX" 2>/dev/null \
+          || mktemp "${TMPDIR:-/tmp}/vr-req.XXXXXX")" || return 1
+  chmod 600 "$body" 2>/dev/null
+  printf '%s' "$payload" > "$body"
+  esc="$(printf '%s' "$auth" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  curl -sS --max-time "$(get_tuning_num CLOUD_HTTP_TIMEOUT 45)" \
+    -X POST "$url" \
+    -H 'Content-Type: application/json' \
+    -d "@$body" \
+    -o "$out" -w '%{http_code}' \
+    --config - <<CURLCFG
+header = "$esc"
+CURLCFG
+  rc=$?
+  rm -f "$body"
+  return "$rc"
+}
+
 # Gemini API TTS: sends text to a Gemini-TTS model, gets back raw PCM audio
 # (16-bit, 24kHz, mono, no WAV header — see Gemini API speech-generation
 # docs), wraps it as a WAV and plays it via termux-media-player. Needs
@@ -791,16 +837,18 @@ speak_gemini() {
   # 20s used to be enough, but a long full-mode readout (200+ chars) can
   # legitimately take Gemini past that and curl aborts with an empty body,
   # which reads as a generic API failure — observed 2026-07-20 benchmarking.
-  response="$(curl -sS --max-time "$(get_tuning_num CLOUD_HTTP_TIMEOUT 45)" \
-    "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${api_key}" \
-    -H 'Content-Type: application/json' \
-    -d "$payload" 2>/dev/null)"
-
-  audio_b64="$(printf '%s' "$response" | jq -r '.candidates[0].content.parts[0].inlineData.data // empty' 2>/dev/null)"
+  # Key and body both stay off the command line — see cloud_post.
+  local resp_file http
+  resp_file="$(mktemp "${PLUGIN_DATA_DIR}/vr-resp.XXXXXX" 2>/dev/null || mktemp "${TMPDIR:-/tmp}/vr-resp.XXXXXX")" || return 1
+  chmod 600 "$resp_file" 2>/dev/null
+  http="$(cloud_post "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent" \
+                     "x-goog-api-key: ${api_key}" "$payload" "$resp_file")"
+  audio_b64="$(jq -r '.candidates[0].content.parts[0].inlineData.data // empty' "$resp_file" 2>/dev/null)"
   if [ -z "$audio_b64" ]; then
-    log error "gemini TTS request failed: $(printf '%s' "$response" | tr -d '\n' | cut -c1-200)"
-    return 1
+    log error "gemini TTS request failed (http ${http}): $(tr -d '\n' < "$resp_file" 2>/dev/null | cut -c1-200)"
+    rm -f "$resp_file"; return 1
   fi
+  rm -f "$resp_file"
 
   # termux-media-player is how Termux:API actually reaches the phone speaker
   # (it hands the file to Android's own MediaPlayer). ffplay/aplay running
@@ -890,17 +938,17 @@ speak_inworld() {
 
   # Matches the Gemini backend's cap — see the comment there for why 20s
   # wasn't enough for long full-mode readouts.
-  response="$(curl -sS --max-time "$(get_tuning_num CLOUD_HTTP_TIMEOUT 45)" \
-    "https://api.inworld.ai/tts/v1/voice" \
-    -H "Authorization: Basic ${api_key}" \
-    -H 'Content-Type: application/json' \
-    -d "$payload" 2>/dev/null)"
-
-  audio_b64="$(printf '%s' "$response" | jq -r '.audioContent // empty' 2>/dev/null)"
+  local resp_file http
+  resp_file="$(mktemp "${PLUGIN_DATA_DIR}/vr-resp.XXXXXX" 2>/dev/null || mktemp "${TMPDIR:-/tmp}/vr-resp.XXXXXX")" || return 1
+  chmod 600 "$resp_file" 2>/dev/null
+  http="$(cloud_post "https://api.inworld.ai/tts/v1/voice" \
+                     "Authorization: Basic ${api_key}" "$payload" "$resp_file")"
+  audio_b64="$(jq -r '.audioContent // empty' "$resp_file" 2>/dev/null)"
   if [ -z "$audio_b64" ]; then
-    log error "inworld TTS request failed: $(printf '%s' "$response" | tr -d '\n' | cut -c1-200)"
-    return 1
+    log error "inworld TTS request failed (http ${http}): $(tr -d '\n' < "$resp_file" 2>/dev/null | cut -c1-200)"
+    rm -f "$resp_file"; return 1
   fi
+  rm -f "$resp_file"
 
   # Same proot/Termux:API path constraint as the Gemini backend — see the
   # comment there for why the file must live under $TERMUX_HOME.
@@ -986,12 +1034,8 @@ speak_elevenlabs() {
   fi
   local mp3_file="$scratch_dir/audio-$$.mp3"
 
-  http_code="$(curl -sS --max-time "$(get_tuning_num CLOUD_HTTP_TIMEOUT 45)" -w '%{http_code}' \
-    -X POST "https://api.elevenlabs.io/v1/text-to-speech/${voice}" \
-    -H "xi-api-key: ${api_key}" \
-    -H 'Content-Type: application/json' \
-    -d "$payload" \
-    -o "$mp3_file" 2>/dev/null)"
+  http_code="$(cloud_post "https://api.elevenlabs.io/v1/text-to-speech/${voice}" \
+                          "xi-api-key: ${api_key}" "$payload" "$mp3_file")"
 
   if [ "$http_code" != "200" ] || [ ! -s "$mp3_file" ]; then
     log error "elevenlabs TTS request failed (http ${http_code}): $(head -c 200 "$mp3_file" 2>/dev/null | tr -d '\n')"
@@ -1147,7 +1191,7 @@ _cloud_audio_path() {
 
 # gen_gemini TEXT OUTFILE — produce a WAV at OUTFILE. No playback. Returns 0/1.
 gen_gemini() {
-  local text="$1" out="$2" api_key model voice payload response audio_b64 pcm
+  local text="$1" out="$2" api_key model voice payload response http audio_b64 pcm
   api_key="$(get_gemini_api_key)"
   [ -z "$api_key" ] && { log error "gemini backend selected but no API key set"; return 1; }
   command -v ffmpeg >/dev/null 2>&1 || { log error "gemini backend needs ffmpeg"; return 1; }
@@ -1168,9 +1212,19 @@ gen_gemini() {
     spoken="Read the following Japanese text aloud naturally, at about ${speed}x the normal speaking pace — noticeably faster and crisper than the default, but still clear. Do not read this instruction."$'\n\n'"${text}"
   fi
   payload="$(jq -n --arg text "$spoken" --arg voice "$voice" '{contents:[{parts:[{text:$text}]}],generationConfig:{responseModalities:["AUDIO"],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:$voice}}}}}')"
-  response="$(curl -sS --max-time "$(get_tuning_num CLOUD_HTTP_TIMEOUT 45)" "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${api_key}" -H 'Content-Type: application/json' -d "$payload" 2>/dev/null)"
-  audio_b64="$(printf '%s' "$response" | jq -r '.candidates[0].content.parts[0].inlineData.data // empty' 2>/dev/null)"
-  [ -z "$audio_b64" ] && { log error "gemini TTS request failed: $(printf '%s' "$response" | tr -d '\n' | cut -c1-160)"; return 1; }
+  # Key travels as a header via cloud_post's stdin config, not in the URL — see
+  # the comment on cloud_post. Response lands in a file because that is what
+  # keeps the request body off the command line too.
+  response="$(mktemp "${PLUGIN_DATA_DIR}/vr-resp.XXXXXX" 2>/dev/null || mktemp "${TMPDIR:-/tmp}/vr-resp.XXXXXX")" || return 1
+  chmod 600 "$response" 2>/dev/null
+  http="$(cloud_post "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent" \
+                     "x-goog-api-key: ${api_key}" "$payload" "$response")"
+  audio_b64="$(jq -r '.candidates[0].content.parts[0].inlineData.data // empty' "$response" 2>/dev/null)"
+  if [ -z "$audio_b64" ]; then
+    log error "gemini TTS request failed (http ${http}): $(tr -d '\n' < "$response" 2>/dev/null | cut -c1-160)"
+    rm -f "$response"; return 1
+  fi
+  rm -f "$response"
   pcm="${out%.wav}.pcm"
   printf '%s' "$audio_b64" | base64 -d > "$pcm" 2>/dev/null
   if ! ffmpeg -y -f s16le -ar 24000 -ac 1 -i "$pcm" "$out" -loglevel error 2>/dev/null; then
@@ -1181,7 +1235,7 @@ gen_gemini() {
 
 # gen_inworld TEXT OUTFILE — produce a WAV at OUTFILE. Returns 0/1.
 gen_inworld() {
-  local text="$1" out="$2" api_key model voice lang rate payload response audio_b64
+  local text="$1" out="$2" api_key model voice lang rate payload response http audio_b64
   api_key="$(get_inworld_api_key)"
   [ -z "$api_key" ] && { log error "inworld backend selected but no API key set"; return 1; }
   model="$(get_tuning INWORLD_MODEL "${VOICE_READOUT_INWORLD_MODEL:-inworld-tts-1.5-mini}")"
@@ -1194,9 +1248,16 @@ gen_inworld() {
   rate="$(resolve_speed INWORLD_SPEAKING_RATE 1.11)"
   case "$rate" in ''|*[!0-9.]*) rate=1.3 ;; esac
   payload="$(jq -n --arg text "$text" --arg voice "$voice" --arg model "$model" --arg lang "$lang" --argjson rate "$rate" '{text:$text,voiceId:$voice,modelId:$model,language:$lang,audioConfig:{audioEncoding:"LINEAR16",sampleRateHertz:24000,speakingRate:$rate}}')"
-  response="$(curl -sS --max-time "$(get_tuning_num CLOUD_HTTP_TIMEOUT 45)" "https://api.inworld.ai/tts/v1/voice" -H "Authorization: Basic ${api_key}" -H 'Content-Type: application/json' -d "$payload" 2>/dev/null)"
-  audio_b64="$(printf '%s' "$response" | jq -r '.audioContent // empty' 2>/dev/null)"
-  [ -z "$audio_b64" ] && { log error "inworld TTS request failed: $(printf '%s' "$response" | tr -d '\n' | cut -c1-160)"; return 1; }
+  response="$(mktemp "${PLUGIN_DATA_DIR}/vr-resp.XXXXXX" 2>/dev/null || mktemp "${TMPDIR:-/tmp}/vr-resp.XXXXXX")" || return 1
+  chmod 600 "$response" 2>/dev/null
+  http="$(cloud_post "https://api.inworld.ai/tts/v1/voice" \
+                     "Authorization: Basic ${api_key}" "$payload" "$response")"
+  audio_b64="$(jq -r '.audioContent // empty' "$response" 2>/dev/null)"
+  if [ -z "$audio_b64" ]; then
+    log error "inworld TTS request failed (http ${http}): $(tr -d '\n' < "$response" 2>/dev/null | cut -c1-160)"
+    rm -f "$response"; return 1
+  fi
+  rm -f "$response"
   printf '%s' "$audio_b64" | base64 -d > "$out" 2>/dev/null
   [ -s "$out" ] || { log error "inworld TTS: empty decode"; rm -f "$out"; return 1; }
   return 0
@@ -1218,7 +1279,8 @@ gen_elevenlabs() {
   case "$speed" in ''|*[!0-9.]*) speed=1.0 ;; esac
   payload="$(jq -n --arg text "$text" --arg model "$model" --argjson speed "$speed" '{text:$text, model_id:$model, voice_settings:{speed:$speed}}')"
   raw="${out%.mp3}-raw.mp3"
-  http="$(curl -sS --max-time "$(get_tuning_num CLOUD_HTTP_TIMEOUT 45)" -w '%{http_code}' -X POST "https://api.elevenlabs.io/v1/text-to-speech/${voice}" -H "xi-api-key: ${api_key}" -H 'Content-Type: application/json' -d "$payload" -o "$raw" 2>/dev/null)"
+  http="$(cloud_post "https://api.elevenlabs.io/v1/text-to-speech/${voice}" \
+                     "xi-api-key: ${api_key}" "$payload" "$raw")"
   if [ "$http" != "200" ] || [ ! -s "$raw" ]; then
     log error "elevenlabs TTS request failed (http ${http}): $(head -c 160 "$raw" 2>/dev/null | tr -d '\n')"; rm -f "$raw"; return 1
   fi
