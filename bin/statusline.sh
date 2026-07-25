@@ -3,13 +3,13 @@
 # Claude Code console, so "will the next response be spoken or not" is visible
 # at a glance. Reads the exact same config file and stop-switch path the hooks
 # use, so it can never disagree with what actually gets spoken. Looks like:
-#   voice-readout|greet 🔊🔇|notif 🔊 gemini|resp 🔊 sum inworld|×1.2
-#   voice-readout|greet 🔊🔊|notif 🔊 local|resp 🔊 full gemini|×1.3|🔔
+#   voice readout|greet 🔊🔇|notif 🔊 gemini|resp 🔊 sum inworld|×1.2
+#   voice readout|greet 🔊🔊|notif 🔊 local|resp 🔊 full gemini|×1.3|🔔
 # (×N = reading pace, 🔔 = chunk marker on)
 #
 # On a terminal too narrow for all of it, the segments wrap onto further rows
 # rather than being cut off:
-#   voice-readout|greet 🔊🔊|notif 🔊 inworld
+#   voice readout|greet 🔊🔊|notif 🔊 inworld
 #   resp 🔊 full inworld|×1.3|🔔
 #
 # Wire it up in settings.json (NOT a plugin hook, so ${CLAUDE_PLUGIN_ROOT} is
@@ -29,11 +29,15 @@ export LC_ALL=C.utf8
 # probe report the fallback 80 — it exports COLUMNS instead (v2.1.153+). Older
 # versions export nothing, and no information means no wrapping: one long line,
 # exactly what this script did before.
-# Two columns are held back for the interface's own spacing around the row.
+# Columns are held back for the interface's own spacing around the row, which
+# is not exposed anywhere and had to be measured: at a real COLUMNS of 59 the
+# row was still cut after 55, so the usable width is COLUMNS-4, not COLUMNS-2.
+# (The `padding` setting in settings.json only ever ADDS to this, so it cannot
+# buy any of it back.)
 COLS=0
 case "${COLUMNS:-}" in
   ''|*[!0-9]*) ;;
-  *) COLS=$(( COLUMNS - 2 )) ;;
+  *) COLS=$(( COLUMNS - 4 )) ;;
 esac
 
 # Display width in terminal columns. Every emoji this script prints is a single
@@ -104,7 +108,7 @@ cfg() {
 if [ -e "$STOP_SWITCH_FILE" ]; then
   # Named like every other state of this row: it is the one people stare at
   # while wondering what stopped talking.
-  seg 'voice-readout'
+  seg 'voice readout'
   seg '🛑 ALL MUTED'
   emit
   exit 0
@@ -170,7 +174,7 @@ fi
 # Which plugin this row belongs to. Spelled in English rather than カタカナ:
 # that rule exists for text the TTS engines have to pronounce (they read
 # "voice-readout" as レッドアウト), and nothing here is ever spoken.
-seg 'voice-readout'
+seg 'voice readout'
 seg "$(printf 'greet %s%s' \
   "$(icon "$(cfg STARTUP_GREETING)")" "$(icon "$(cfg SESSION_END_GREETING)")")"
 seg "$(printf 'notif %s %s' \
