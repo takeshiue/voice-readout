@@ -116,6 +116,55 @@ case "${1:-}" in
     # single launch; the repair is recorded in the plugin log instead.
     if [ "$ACTION" = "--repair" ]; then
       command -v jq >/dev/null 2>&1 || exit 0
+
+      # Everything this branch has to say goes to the plugin log, never stdout.
+      rlog() {
+        [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -d "${CLAUDE_PLUGIN_DATA}" ] || return 0
+        printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" info "statusline: $1" \
+          >> "${CLAUDE_PLUGIN_DATA}/voice-readout.log" 2>/dev/null
+      }
+
+      # --- Register once, on the first session after an install. ------------
+      # Nothing fires when a plugin is installed — Claude Code has no such hook
+      # event — so the first session that runs any of this plugin's hooks is the
+      # only "just installed" signal there is. Without this the status line
+      # simply never appeared unless someone read the README and ran --install
+      # by hand; that is how it went missing on 2026-07-25, when reinstalling
+      # the plugin stripped the registration (uninstall.sh does that on purpose)
+      # and nothing ever put it back.
+      #
+      # A marker file makes it once per install rather than once per session,
+      # which is what keeps the original promise intact: remove the status line
+      # and it stays removed. The marker lives in the plugin's data directory,
+      # so a genuine reinstall — which recreates that directory — is treated as
+      # a fresh install and registers again.
+      #
+      # Only ever adds a registration where there is NONE. An existing entry is
+      # left to the repair pass below: ours gets its path corrected, anyone
+      # else's is not ours to overwrite.
+      #
+      # The marker is written whatever the outcome, including failure. A retry
+      # every launch would be an install attempt the user never asked for, over
+      # and over, with no way to say no.
+      MARKER=""
+      [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -d "${CLAUDE_PLUGIN_DATA}" ] \
+        && MARKER="${CLAUDE_PLUGIN_DATA}/.statusline-bootstrapped"
+      if [ -n "$MARKER" ] && [ ! -e "$MARKER" ]; then
+        : > "$MARKER" 2>/dev/null
+        [ -f "$SETTINGS" ] || printf '{}\n' > "$SETTINGS" 2>/dev/null
+        if jq -e . "$SETTINGS" >/dev/null 2>&1 \
+           && [ -z "$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null)" ]; then
+          if jq --arg cmd "$SELF" '.statusLine = {type: "command", command: $cmd}' \
+               "$SETTINGS" > "${SETTINGS}.tmp" 2>/dev/null && [ -s "${SETTINGS}.tmp" ]; then
+            mv "${SETTINGS}.tmp" "$SETTINGS"
+            rlog "first run: registered in ${SETTINGS} -> ${SELF}"
+          else
+            rm -f "${SETTINGS}.tmp"
+            rlog "first run: could not write ${SETTINGS}"
+          fi
+        fi
+      fi
+
       TARGETS="$SETTINGS"
       # Hooks — unlike a hand-run script — are given CLAUDE_PROJECT_DIR, so the
       # project pair can be repaired too rather than only warned about. A
@@ -136,11 +185,7 @@ ${CLAUDE_PROJECT_DIR}/.claude/settings.local.json"
         if jq --arg cmd "$SELF" '.statusLine = {type: "command", command: $cmd}' \
              "$sf" > "${sf}.tmp" 2>/dev/null && [ -s "${sf}.tmp" ]; then
           mv "${sf}.tmp" "$sf"
-          if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -d "${CLAUDE_PLUGIN_DATA}" ]; then
-            printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" info \
-              "statusline: repaired stale path in ${sf}: ${cur} -> ${SELF}" \
-              >> "${CLAUDE_PLUGIN_DATA}/voice-readout.log" 2>/dev/null
-          fi
+          rlog "repaired stale path in ${sf}: ${cur} -> ${SELF}"
         else
           rm -f "${sf}.tmp"
         fi
