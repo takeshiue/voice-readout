@@ -48,7 +48,11 @@ CODE_ONLY_CLIP="${PLUGIN_ROOT_DIR}/assets/code-only.wav"
 if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
   PLUGIN_DATA_DIR="$CLAUDE_PLUGIN_DATA"
 elif [ -n "${HOME:-}" ]; then
-  PLUGIN_DATA_DIR="${HOME}/.claude/plugins/data/voice-readout-voice-readout"
+  # CLAUDE_CONFIG_DIR relocates Claude Code's whole config directory, so the
+  # plugin data under it moves too. Honouring it matters for agreement as much
+  # as for correctness: statusline.sh resolves the same path independently, and
+  # if the two disagree the status line reports settings nothing is reading.
+  PLUGIN_DATA_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data/voice-readout-voice-readout"
 else
   # Neither variable set — a stripped environment no normal run reaches. A
   # shared /tmp is still not somewhere an API key may go, so use a per-uid

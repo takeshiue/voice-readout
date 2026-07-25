@@ -212,7 +212,7 @@ emit() {
 if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
   CONFIG_FILE="$CLAUDE_PLUGIN_DATA/voice-readout-config"
 else
-  CONFIG_FILE="${HOME}/.claude/plugins/data/voice-readout-voice-readout/voice-readout-config"
+  CONFIG_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data/voice-readout-voice-readout/voice-readout-config"
 fi
 # Fixed absolute path, matching readout-switch.sh / tts-lib.sh. The stop switch
 # deliberately does NOT honour CLAUDE_PLUGIN_DATA, so neither does this reader.

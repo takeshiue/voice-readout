@@ -62,7 +62,7 @@ set -eu
 if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
   PLUGIN_DATA_DIR="$CLAUDE_PLUGIN_DATA"
 elif [ -n "${HOME:-}" ]; then
-  PLUGIN_DATA_DIR="${HOME}/.claude/plugins/data/voice-readout-voice-readout"
+  PLUGIN_DATA_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data/voice-readout-voice-readout"
 else
   PLUGIN_DATA_DIR="${TMPDIR:-/tmp}/voice-readout-$(id -u 2>/dev/null || echo 0)"
 fi

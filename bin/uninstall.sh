@@ -43,7 +43,7 @@ done
 if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
   DATA_DIR="$CLAUDE_PLUGIN_DATA"
 elif [ -n "${HOME:-}" ]; then
-  DATA_DIR="${HOME}/.claude/plugins/data/voice-readout-voice-readout"
+  DATA_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data/voice-readout-voice-readout"
 else
   DATA_DIR=""
 fi
@@ -127,8 +127,8 @@ if command -v jq >/dev/null 2>&1; then
   # The user-level pair, plus the project-level pair for wherever this was run
   # from. A project file somewhere else on disk cannot be found from here, so
   # the miss is reported rather than passed over in silence.
-  for s in "${HOME:-}/.claude/settings.json" \
-           "${HOME:-}/.claude/settings.local.json" \
+  for s in "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/settings.json" \
+           "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/settings.local.json" \
            "$PWD/.claude/settings.json" \
            "$PWD/.claude/settings.local.json"; do
     strip_statusline "$s" && sl_found=1
