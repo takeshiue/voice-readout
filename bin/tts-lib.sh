@@ -817,6 +817,18 @@ CURLCFG
   return "$rc"
 }
 
+# Model ids are vendor identifiers — letters, digits, dot, dash, underscore —
+# and go straight into a URL path or a JSON field. Anything else arriving from
+# the config file is a typo or an attempt to point the request somewhere it was
+# not meant to go, so fall back to the shipped default rather than sending it.
+# sanitize_model VALUE DEFAULT
+sanitize_model() {
+  case "$1" in
+    ''|*[!A-Za-z0-9._-]*) printf '%s' "$2" ;;
+    *)                    printf '%s' "$1" ;;
+  esac
+}
+
 # Gemini API TTS: sends text to a Gemini-TTS model, gets back raw PCM audio
 # (16-bit, 24kHz, mono, no WAV header — see Gemini API speech-generation
 # docs), wraps it as a WAV and plays it via termux-media-player. Needs
@@ -836,7 +848,7 @@ speak_gemini() {
     return 1
   fi
 
-  local model="${VOICE_READOUT_GEMINI_MODEL:-gemini-2.5-flash-preview-tts}"
+  local model; model="$(sanitize_model "${VOICE_READOUT_GEMINI_MODEL:-gemini-2.5-flash-preview-tts}" gemini-2.5-flash-preview-tts)"
   local voice="${VOICE_READOUT_GEMINI_VOICE:-Kore}"
   local payload response audio_b64
 
@@ -934,7 +946,7 @@ speak_inworld() {
     return 1
   fi
 
-  local model="${VOICE_READOUT_INWORLD_MODEL:-inworld-tts-1.5-mini}"
+  local model; model="$(sanitize_model "${VOICE_READOUT_INWORLD_MODEL:-inworld-tts-1.5-mini}" inworld-tts-1.5-mini)"
   # "Olivia" (English-native, young British) — picked 2026-07-20 after
   # comparing against Hina/Asuka/Sarah/Selene/Evelyn for Japanese readouts;
   # her voice is en-native but the cross-lingual model still speaks $lang.
@@ -1030,7 +1042,7 @@ speak_elevenlabs() {
   # quality / most expressive voice (slower + pricier). The env var, if set,
   # provides the fallback default when no config value is present.
   local model
-  model="$(get_tuning ELEVENLABS_MODEL "${VOICE_READOUT_ELEVENLABS_MODEL:-eleven_flash_v2_5}")"
+  model="$(sanitize_model "$(get_tuning ELEVENLABS_MODEL "${VOICE_READOUT_ELEVENLABS_MODEL:-eleven_flash_v2_5}")" eleven_flash_v2_5)"
   # "アマテラステラス2" (middle-aged, ja-kanto accent) — a custom voice already
   # in the account's ElevenLabs voice library, picked 2026-07-20 for a mature,
   # Japanese-native-sounding tone.
@@ -1064,7 +1076,11 @@ speak_elevenlabs() {
   # backend can be made quieter (<1) or louder (>1) independently of the device
   # media volume. Default 1.0 = untouched, so behaviour is unchanged unless set.
   local gain play_file adj_file
+  # Validated like every other value that reaches an external command: this one
+  # is interpolated into an ffmpeg filter string, where a non-numeric value
+  # would add filters of its own rather than set a volume.
   gain="$(get_tuning ELEVENLABS_GAIN 1.0)"
+  case "$gain" in ''|*[!0-9.]*) gain=1.0 ;; esac
   play_file="$mp3_file"
   if [ -n "$gain" ] && [ "$gain" != "1.0" ] && [ "$gain" != "1" ] && command -v ffmpeg >/dev/null 2>&1; then
     adj_file="$scratch_dir/audio-$$-adj.mp3"
@@ -1209,7 +1225,7 @@ gen_gemini() {
   api_key="$(get_gemini_api_key)"
   [ -z "$api_key" ] && { log error "gemini backend selected but no API key set"; return 1; }
   command -v ffmpeg >/dev/null 2>&1 || { log error "gemini backend needs ffmpeg"; return 1; }
-  model="$(get_tuning GEMINI_MODEL "${VOICE_READOUT_GEMINI_MODEL:-gemini-2.5-flash-preview-tts}")"
+  model="$(sanitize_model "$(get_tuning GEMINI_MODEL "${VOICE_READOUT_GEMINI_MODEL:-gemini-2.5-flash-preview-tts}")" gemini-2.5-flash-preview-tts)"
   voice="${VOICE_READOUT_GEMINI_VOICE:-Kore}"
   # Gemini TTS has no speed parameter — its default pace is fine for reading a
   # novel aloud but too slow for Claude Code readouts. Pace is instead steered by
@@ -1252,7 +1268,7 @@ gen_inworld() {
   local text="$1" out="$2" api_key model voice lang rate payload response http audio_b64
   api_key="$(get_inworld_api_key)"
   [ -z "$api_key" ] && { log error "inworld backend selected but no API key set"; return 1; }
-  model="$(get_tuning INWORLD_MODEL "${VOICE_READOUT_INWORLD_MODEL:-inworld-tts-1.5-mini}")"
+  model="$(sanitize_model "$(get_tuning INWORLD_MODEL "${VOICE_READOUT_INWORLD_MODEL:-inworld-tts-1.5-mini}")" inworld-tts-1.5-mini)"
   voice="${VOICE_READOUT_INWORLD_VOICE:-Olivia}"
   lang="${VOICE_READOUT_INWORLD_LANG:-ja}"
   # speakingRate: 0.5-1.5 (1.0 = native). Inworld's native pace runs slow for
@@ -1283,7 +1299,7 @@ gen_elevenlabs() {
   local text="$1" out="$2" api_key model voice speed payload http gain tempo filters raw
   api_key="$(get_elevenlabs_api_key)"
   [ -z "$api_key" ] && { log error "elevenlabs backend selected but no API key set"; return 1; }
-  model="$(get_tuning ELEVENLABS_MODEL "${VOICE_READOUT_ELEVENLABS_MODEL:-eleven_flash_v2_5}")"
+  model="$(sanitize_model "$(get_tuning ELEVENLABS_MODEL "${VOICE_READOUT_ELEVENLABS_MODEL:-eleven_flash_v2_5}")" eleven_flash_v2_5)"
   voice="${VOICE_READOUT_ELEVENLABS_VOICE:-blVzlvngVR9lhf4Gflnk}"
   # speed via voice_settings (1.0 = normal), config-tunable via ELEVENLABS_SPEED.
   # Measured limits (2026-07-24): eleven_v3 IGNORES speed entirely; flash/v2/turbo
@@ -1306,7 +1322,11 @@ gen_elevenlabs() {
   # accepts the value and silently drops it. atempo changes tempo without
   # shifting pitch, so the voice is unchanged; it is free whenever a non-default
   # gain is set, since that pass already runs.
+  # Validated like every other value that reaches an external command: this one
+  # is interpolated into an ffmpeg filter string, where a non-numeric value
+  # would add filters of its own rather than set a volume.
   gain="$(get_tuning ELEVENLABS_GAIN 1.0)"
+  case "$gain" in ''|*[!0-9.]*) gain=1.0 ;; esac
   tempo="$(resolve_speed ELEVENLABS_ATEMPO 0.92)"
   case "$tempo" in ''|*[!0-9.]*) tempo=1.0 ;; esac
   # A single atempo filter only accepts 0.5-2.0; out-of-range would make ffmpeg
