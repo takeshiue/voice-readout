@@ -87,14 +87,29 @@ else
   STATE="$2"
 fi
 
+# Rewrite the file (drop the old line, append the new one) rather than editing
+# it in place with sed. The sed form this replaces —
+#   sed -i -E "s/^${key}=.*/${key}=${value}/"
+# — interpolated the value straight into the sed EXPRESSION, so a value
+# containing "/" could close the s/// command and append sed commands of its
+# own. GNU sed's `e` runs the result as a shell command, which made
+#   toggle.sh tune STARTUP_GREETING_TEXT 'おはよう/;e id > /tmp/pwned #'
+# arbitrary command execution as whoever runs the plugin (verified 2026-07-25).
+# That value is not some internal knob either: the documented way to change the
+# greeting is to ask in chat, so free-form user text reaches this line by
+# design. Passing the value as data to printf can't have that class of bug.
+# The value is single-line by construction: a newline would split one setting
+# into two lines, the second of which the readers below would parse as its own
+# KEY=VALUE.
 set_key() {
   local key="$1" value="$2"
+  case "$value" in
+    *$'\n'*) echo "value must not contain a newline" >&2; exit 1 ;;
+  esac
   touch "$CONFIG_FILE"
-  if grep -q -E "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
-    sed -i -E "s/^${key}=.*/${key}=${value}/" "$CONFIG_FILE"
-  else
-    printf '%s=%s\n' "$key" "$value" >> "$CONFIG_FILE"
-  fi
+  { grep -v -E "^${key}=" "$CONFIG_FILE" 2>/dev/null || true; printf '%s=%s\n' "$key" "$value"; } \
+    > "${CONFIG_FILE}.tmp"
+  mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 }
 
 # API keys go in ENV_FILE, not CONFIG_FILE: base64 key values contain "/" and

@@ -140,7 +140,7 @@ git clone https://github.com/takeshiue/voice-readout.git
 | 「もう少しゆっくり読んで」 | 同じく指標を下げる |
 | 「起動の挨拶をオフにして」 | セッション開始時の挨拶読み上げをオフ（裏で `toggle.sh greeting off`。応答・許可確認の読み上げとは独立） |
 | 「起動の挨拶をオンに戻して」 | 起動時の挨拶をオン（デフォルト） |
-| 「起動の挨拶を『〜』にして」 | 挨拶の文言を変更（裏で `toggle.sh tune STARTUP_GREETING_TEXT <文言>`。`/` は使えない） |
+| 「起動の挨拶を『〜』にして」 | 挨拶の文言を変更（裏で `toggle.sh tune STARTUP_GREETING_TEXT <文言>`） |
 | 「終わりの挨拶をオフにして」 | セッション終了時の挨拶クリップをオフ（裏で `toggle.sh farewell off`。起動の挨拶・読み上げとは独立） |
 | 「終わりの挨拶をオンに戻して」 | 終了時の挨拶をオン（デフォルト） |
 | 「Gemini の TTS に切り替えて」（要 API キー） | **全機能の既定**を Gemini API TTS に切替（個別に上書きしていない機能すべてに効く） |
@@ -174,7 +174,7 @@ git clone https://github.com/takeshiue/voice-readout.git
 | `TTS_PITCH` | 1.0 | ピッチ |
 | `NOTIFY_COOLDOWN` | 1800 | 故障通知のクールダウン秒 |
 | `STARTUP_GREETING` | on | セッション開始時の挨拶読み上げの on/off |
-| `STARTUP_GREETING_TEXT` | ボイスリードアウト、準備できたよ | 起動時に読み上げる挨拶の文言（`/` は不可）。**製品名はカタカナで書く** — 英字 `readout` は TTS が「レッドアウト」と読む |
+| `STARTUP_GREETING_TEXT` | ボイスリードアウト、準備できたよ | 起動時に読み上げる挨拶の文言。**製品名はカタカナで書く** — 英字 `readout` は TTS が「レッドアウト」と読む |
 | `SESSION_END_GREETING` | on | セッション終了時の挨拶クリップの on/off |
 | `SESSION_END_GREETING_TEXT` | ボイスリードアウト、またね | 終了時に画面へ表示する文言（音声は固定クリップ。表示のみ） |
 | `WARM_SKIP_WINDOW` | 120 | 直前の読み上げ成功からこの秒数以内なら、オンデバイスのエンジン応答確認（約2秒）を省く。0 で無効 |
