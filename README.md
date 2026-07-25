@@ -341,20 +341,24 @@ voice-readout/
 
 **API キーの保存場所**：Gemini・Inworld・ElevenLabs 共通で `${CLAUDE_PLUGIN_DATA}/voice-readout.env` に `KEY=値` の形式でまとめて保存される（`chmod 600`）。バックエンドが増えてもこの1ファイルにキーが集約される設計。
 
+> **API キーはチャットに貼らないこと。** 会話に書いた内容はトランスクリプトとして端末に保存され、モデルへの入力としても送られる。キーの登録だけは**ターミナルで直接コマンドを実行する**。切替のような他の操作はチャットからで構わない。
+
 **セットアップ手順（Gemini）**：
-1. Google AI Studio で API キーを取得する
-2. チャットで「Gemini の TTS 用の API キーは ○○ です」のように伝える（裏で `toggle.sh gemini-key <キー>` を実行）
+1. [Google AI Studio](https://aistudio.google.com/) で API キーを取得する
+2. **ターミナルで** `bin/toggle.sh gemini-key <キー>` を実行する
 3. 「Gemini の TTS に切り替えて」で backend を切替（裏で `toggle.sh backend gemini` を実行）
 
 **セットアップ手順（Inworld）**：
 1. [Inworld Portal](https://platform.inworld.ai/) で API キーを取得する
-2. チャットで「Inworld の TTS用の API キーは ○○ です」のように伝える（裏で `toggle.sh inworld-key <キー>` を実行）
+2. **ターミナルで** `bin/toggle.sh inworld-key <キー>` を実行する
 3. 「Inworld の TTS に切り替えて」で backend を切替（裏で `toggle.sh backend inworld` を実行）
 
 **セットアップ手順（ElevenLabs）**：
 1. [ElevenLabs](https://elevenlabs.io/) で API キーを取得する
-2. チャットで「ElevenLabs の TTS 用の API キーは ○○ です」のように伝える（裏で `toggle.sh elevenlabs-key <キー>` を実行）
+2. **ターミナルで** `bin/toggle.sh elevenlabs-key <キー>` を実行する
 3. 「ElevenLabs の TTS に切り替えて」で backend を切替（裏で `toggle.sh backend elevenlabs` を実行）
+
+登録済みのキーを消すには `bin/toggle.sh <エンジン>-key clear`（例：`bin/toggle.sh gemini-key clear`）。シェルの履歴にキーを残したくない場合は、コマンドの先頭に空白を1つ入れて実行するか、`voice-readout.env` を直接編集する。
 
 デフォルトの声・モデル・言語は環境変数で上書きできる：Inworld は `VOICE_READOUT_INWORLD_VOICE`（既定 `Olivia`、英語ネイティブの若い英国系女性声。Hina/Asuka/Sarah/Selene/Evelyn と聴き比べた上で2026-07-20に選定）/ `VOICE_READOUT_INWORLD_MODEL`（既定 `inworld-tts-1.5-mini`）/ `VOICE_READOUT_INWORLD_LANG`（既定 `ja`）、ElevenLabs は `VOICE_READOUT_ELEVENLABS_VOICE`（既定 `blVzlvngVR9lhf4Gflnk` = アカウントのマイボイス「アマテラステラス2」、middle-aged・ja-kanto）/ `VOICE_READOUT_ELEVENLABS_MODEL`（既定 `eleven_flash_v2_5`）。日本語に強い声を探したい場合は各社のダッシュボードで試聴して差し替える。
 
