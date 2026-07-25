@@ -126,57 +126,50 @@ git clone https://github.com/takeshiue/voice-readout.git
 
 ### アンインストール
 
-このプラグインは Android 側と proot 側の**両方**に置き土産をするので、プラグインを消しただけでは終わらない。特に**常駐通知は `--ongoing`（スワイプで消せない）**ので、順番を守って消す。
+このプラグインは Android 側と proot 側の**両方**に置き土産をするので、プラグインを消しただけでは終わらない。後始末用のスクリプトを同梱している。
 
-**1. 通知を先に消す**（Termux 側で実行）
-
-先にプラグインを消すと、通知のボタンが存在しないスクリプトを叩く状態で画面に残り続ける。ここが最初。
+クローンして使っている場合は、そのディレクトリで：
 
 ```sh
-termux-notification-remove voice-readout-switch   # ストップスイッチのボタン
-termux-notification-remove voice-readout-fix      # 故障時の復旧手順（出ていれば）
-termux-wake-unlock                                # 読み上げ中に取ったロックが残っていれば
+bash bin/uninstall.sh
 ```
 
-**2. プラグインを外す**
+マーケットプレイス経由で入れた場合、置き場所はバージョン番号を含む（`~/.claude/plugins/cache/voice-readout/voice-readout/<版>/`）ので、探してから実行する：
 
-Claude Code の中からなら：
+```sh
+bash "$(find ~/.claude/plugins -path '*voice-readout*' -name uninstall.sh | head -1)"
+```
+
+確認プロンプトを飛ばすなら `--yes`、設定と API キーを残したいなら `--keep-data`。中身は消す前に一覧で示され、`y` と答えるまで何もしない。
+
+やってくれること：
+
+| | 内容 |
+|---|---|
+| 常駐通知の削除 | ストップスイッチと故障通知。**`--ongoing` で出しているのでスワイプでは消せず**、`termux-notification-remove` が要る。**プラグインより先に**消さないと、ボタンが存在しないスクリプトを叩く状態で残る |
+| `statusLine` の解除 | `~/.claude/settings.json` から削除（**このプラグインを指しているときだけ**。別のスクリプトを指していれば触らない。元ファイルは `.bak-voice-readout` として残す） |
+| 設定・APIキー・ログの削除 | `~/.claude/plugins/data/voice-readout-voice-readout/` |
+| Termux 側の残骸の削除 | `~/.voice-readout-stopped` / `~/.voice-readout-switch.sh` / `~/.voice-readout-tmp/` |
+| 復旧ウォッチャーの停止 | 常駐したまま残っている場合 |
+
+**プラグイン本体の削除だけは自分で行う。** パッケージの削除はパッケージマネージャ（Claude Code）の仕事なので、スクリプトはそこには手を出さず、最後にコマンドを表示して終わる：
 
 ```
 /plugin uninstall voice-readout@voice-readout
 /plugin marketplace remove voice-readout
 ```
 
-ターミナルからでも同じことができる（Claude Code を起動せずに片付けたいとき）：
+ターミナルからなら `claude plugin uninstall voice-readout@voice-readout`。
+
+**API キーは発行元でも失効させること。** ローカルのファイルを消してもキー自体は生きている。使わなくなったキーは各サービスのダッシュボード（Google AI Studio / Inworld Portal / ElevenLabs）で削除しておく。
+
+### 音声の一時ファイルだけ消したい
+
+`~/.voice-readout-tmp/` は読み上げのたびに音声ファイルを置く場所で、**チャンク音声（`vr-*`）以外は自動削除されない**ため使っているうちに溜まる（十数MBになることがある）。アンインストールせず容量だけ空けたいときは、ここを消せばよい。次の読み上げで必要なものは作り直される。
 
 ```sh
-claude plugin uninstall voice-readout@voice-readout
-claude plugin marketplace remove voice-readout
+rm -rf ~/.voice-readout-tmp/
 ```
-
-ステータスラインを登録していた場合は、`~/.claude/settings.json` から `statusLine` の行を手で消す（プラグインの管理外なので自動では消えない）。
-
-**3. 設定・鍵・ログを消す**（proot 側で実行）
-
-```sh
-rm -rf ~/.claude/plugins/data/voice-readout-voice-readout/
-```
-
-このディレクトリには **API キー（`voice-readout.env`）と、応答の要約が入ったログ**が入っている。消し忘れると鍵がそのまま残る。
-
-**4. Termux 側に残るものを消す**（Termux 側で実行）
-
-```sh
-rm -f  ~/.voice-readout-stopped      # ストップスイッチの状態ファイル
-rm -f  ~/.voice-readout-switch.sh    # 通知ボタンが叩く小スクリプト
-rm -rf ~/.voice-readout-tmp/         # 再生用の音声一時ファイル（数MB〜十数MB溜まる）
-```
-
-`~/.voice-readout-tmp/` は読み上げのたびに音声ファイルを置く場所で、**チャンク音声（`vr-*`）以外は自動削除されない**ため、使っているうちに溜まる。アンインストールしないまま容量だけ空けたい場合も、ここを消せばよい（次の読み上げで必要なものは再生成される）。
-
-**5. API キーは発行元でも失効させる**
-
-ローカルのファイルを消しても、キー自体は生きている。使わなくなったキーは各サービスのダッシュボード（Google AI Studio / Inworld Portal / ElevenLabs）で削除しておく。
 
 ## 使えるオプション
 
@@ -358,7 +351,8 @@ voice-readout/
 │   ├── session-greet.sh         SessionStart フック本体（起動/再開時に挨拶を1回読み上げ、音が出るかを即確認）
 │   ├── session-farewell.sh      SessionEnd フック本体（終了時に挨拶クリップを1回再生）
 │   ├── statusline.sh            コンソール最下部に現在の状態を1行表示（settings.json の statusLine に登録して使う）
-│   └── speak-text.sh            任意のファイル/標準入力の文章をそのまま読み上げる手動コマンド（フックではない。Stop フックの要約・整形処理を一切通さない）
+│   ├── speak-text.sh            任意のファイル/標準入力の文章をそのまま読み上げる手動コマンド（フックではない。Stop フックの要約・整形処理を一切通さない）
+│   └── uninstall.sh             後始末コマンド（常駐通知・statusLine 登録・設定/鍵/ログ・Termux 側の残骸を削除。プラグイン本体の削除は Claude Code に任せる）
 ├── assets/
 │   ├── overflow-notice.wav      「長文のため要約にします。」（上限超過時の断り）
 │   ├── notify-permission-request.wav  「実行許可を求めています」
