@@ -254,7 +254,7 @@ rm -rf ~/.voice-readout-tmp/
 | `TTS_RETRY_WAIT` | 90 | 再試行の待機上限秒 |
 | `PREFLIGHT_TIMEOUT` | 10 | エンジン応答確認のタイムアウト秒 |
 | `WATCH_INTERVAL` | 120 | 復旧ウォッチャーの probe 間隔秒 |
-| `LOG_MAX_BYTES` | 1048576 | ログ自動ローテーションの閾値バイト |
+| `LOG_MAX_BYTES` | 1048576 | ログ自動ローテーションの閾値バイト（**1世代あたり**。超えると `voice-readout.log` → `voice-readout.log.1` に退避して新しいログを開始するので、2世代で最大この2倍まで使う） |
 | `READOUT_SPEED` | 1.2 | **全エンジン共通の話速指標**（1.0＝毎分約300字）。下の速度キーはこれから自動算出される |
 | `TTS_RATE` | auto | オンデバイスの速度（`auto`＝指標から算出。数値を書けばそのエンジンだけ上書き） |
 | `GEMINI_SPEED` | auto | Gemini の速度（同上） |

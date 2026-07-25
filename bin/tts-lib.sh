@@ -108,7 +108,8 @@ get_tuning_num() {
 LOG_FILE="${PLUGIN_DATA_DIR}/voice-readout.log"
 # This file is appended to indefinitely across sessions with nothing else
 # trimming it, so self-rotate once it grows past a threshold instead of
-# growing forever.
+# growing forever. Two generations are kept (voice-readout.log and .log.1), so
+# the threshold is the size of ONE of them and the pair can reach twice it.
 LOG_MAX_BYTES="$(get_tuning_num LOG_MAX_BYTES 1048576)"
 log() {
   local size=0
@@ -128,13 +129,24 @@ log() {
   fi
   case "$size" in *[!0-9]*|"") size=0 ;; esac
   if [ "$size" -gt "$LOG_MAX_BYTES" ]; then
-    # The .tmp is a brand-new file at the default umask, so lock it down BEFORE
-    # it becomes the log — moving an 0644 temp file over an 0600 one is exactly
-    # how the API key file lost its permissions (fixed in toggle.sh, same date).
-    if tail -n 500 "$LOG_FILE" > "${LOG_FILE}.tmp" 2>/dev/null; then
-      chmod 600 "${LOG_FILE}.tmp" 2>/dev/null
-      mv "${LOG_FILE}.tmp" "$LOG_FILE" 2>/dev/null
-    fi
+    # Two generations, rotated: the full log becomes .1 and a fresh one starts.
+    #
+    # This used to keep `tail -n 500` and throw the rest away, which at the
+    # observed rate (~500-600 lines a day) meant crossing the 1MB threshold
+    # discarded some 9,000 lines to keep about half a day — and the half day
+    # you keep is the one you already remember. Anything worth investigating,
+    # like a wedge that started three days ago, was gone. Rotating instead puts
+    # the floor at one full threshold's worth of history rather than 500 lines.
+    #
+    # The cost is disk: up to 2 x LOG_MAX_BYTES instead of one. That is the
+    # trade being made deliberately, so LOG_MAX_BYTES now budgets a generation,
+    # not the total.
+    #
+    # mv carries the 0600 mode over with the file, and the replacement is
+    # created here rather than by the append below, which would use the default
+    # umask. Both matter: what is in here is conversation text in the clear.
+    mv -f "$LOG_FILE" "${LOG_FILE}.1" 2>/dev/null
+    : > "$LOG_FILE" 2>/dev/null && chmod 600 "$LOG_FILE" 2>/dev/null
   fi
   printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" >> "$LOG_FILE" 2>/dev/null
 }
