@@ -25,6 +25,10 @@ BRIDGE_CLIP="${PLUGIN_ROOT_DIR}/assets/summary-bridge.wav"
 # the split points are audible (speak_cloud_chunked). Default off: it is a
 # listening aid for checking chunking/handoff, not part of normal readout.
 CHUNK_MARKER_CLIP="${PLUGIN_ROOT_DIR}/assets/chunk-marker.wav"
+# Played when a response is nothing but code/URLs, so stripping those leaves no
+# prose to read (summarize-and-speak.sh). Silence is indistinguishable from a
+# crashed hook for someone who is listening rather than looking.
+CODE_ONLY_CLIP="${PLUGIN_ROOT_DIR}/assets/code-only.wav"
 
 # Persisted settings live here (written by bin/toggle.sh, seeded by
 # `toggle.sh init`). Defined up front because the tuning values below read from
@@ -351,6 +355,11 @@ READOUT_OVERFLOW_NOTICE="${VOICE_READOUT_OVERFLOW_NOTICE:-長文のため要約�
 # Bridge phrase spoken between the verbatim opening and the summary in the
 # experimental overflow pipeline (summarize-and-speak.sh, toggle OVERFLOW_PIPELINE).
 OVERFLOW_PIPELINE_BRIDGE="${VOICE_READOUT_OVERFLOW_PIPELINE_BRIDGE:-残りは要約します。}"
+
+# Spoken when the response was all code and nothing readable survived cleaning.
+# Says only that there is nothing to read aloud — it must not claim what the
+# code did, which this script has no way of knowing.
+READOUT_CODE_ONLY_NOTICE="${VOICE_READOUT_CODE_ONLY_NOTICE:-コードだけだから、読み上げるところはないよ。}"
 
 # Play a pre-rendered fixed-phrase clip (a bundled .wav) through the phone
 # speaker, returning 0 if it played and 1 if the clip is unavailable so the

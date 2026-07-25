@@ -32,8 +32,11 @@ fi
 # (bold/italic markers, headings, list bullets, blockquotes — mainly matters
 # for full mode, which speaks this text verbatim instead of via Haiku),
 # then collapse whitespace.
+# The fence pattern allows leading whitespace: a code block nested in a list
+# item is indented, and an anchored /^```/ left its contents in the text to be
+# read aloud as prose.
 CLEANED="$(printf '%s' "$LAST_MSG" \
-  | sed -E '/^```/,/^```/d' \
+  | sed -E '/^[[:space:]]*```/,/^[[:space:]]*```/d' \
   | sed -E 's/`([^`]*)`/\1/g' \
   | sed -E 's/\[([^]]*)\]\([^)]*\)/\1/g' \
   | sed -E 's#https?://[^ ]+##g' \
@@ -46,11 +49,41 @@ CLEANED="$(printf '%s' "$LAST_MSG" \
 
 CLEANED_TRIMMED="$(printf '%s' "$CLEANED" | sed -E 's/^ +| +$//g')"
 if [ -z "$CLEANED_TRIMMED" ]; then
-  log skip "nothing left to read after stripping code/URLs"
+  # A response that is only code/URLs. Say so rather than going silent: a
+  # listener can't tell silence from a hook that died. Fixed phrase, so the
+  # pre-rendered clip serves it; live TTS only if the clip is unavailable.
+  log skip "nothing left to read after stripping code/URLs, announcing instead"
+  play_notice_clip "$CODE_ONLY_CLIP" nowait || speak "$READOUT_CODE_ONLY_NOTICE" 60 summary
   exit 0
 fi
 
 READOUT_MODE="$(get_readout_mode)"
+
+# The summarizer is a chat model, and handing it a fragment gives it nothing to
+# summarize — so it stops summarizing and answers the user instead
+# (「要約する応答がまだ送られていません…」), which then gets read aloud as if it
+# were the summary. Observed after a response whose prose was one short line
+# around a code block. Reproduced directly: 「はい。」 and 「こうです：」 both
+# produce that reply. Below this length a summary can't beat the text itself
+# anyway, so skip the model — which also drops the ~10-16s summarizer wait from
+# every short reply.
+SUMMARY_MIN_CHARS="$(get_tuning SUMMARY_MIN_CHARS 40)"
+
+# Every phrasing meaning "you gave me nothing to summarize" that has been seen
+# in the log or reproduced, plus the style refusals. One function rather than
+# two copies of a case: the copies drifted, and the variant the user actually
+# heard (「私の前の応答がありません。要約する内容がないんです」) matched neither.
+# Substrings are kept short and specific for that reason — the wording changes
+# from run to run. This is only a backstop; SUMMARY_MIN_CHARS above is what
+# stops the model being asked in the first place.
+summarizer_refused() {
+  case "$1" in
+    *申し訳ありませんが*|*ロールプレイ*|*応答はできません*|*お応えできません*|*"I can't"*|*"I cannot"*) return 0 ;;
+    *要約の対象*|*要約する内容*|*要約する応答*|*要約できる*) return 0 ;;
+    *前のメッセージ*|*前の応答*|*送られていません*|*提供されていない*) return 0 ;;
+  esac
+  return 1
+}
 
 # Summary-prompt components live here (above the full-mode block) because the
 # experimental overflow pipeline inside that block also summarizes and needs
@@ -135,13 +168,12 @@ if [ "$READOUT_MODE" = "full" ]; then
     SUMMARY="$(cat "$PIPE_TMP" 2>/dev/null)"
     rm -f "$PIPE_TMP" "$PIPE_DONE_TMP" 2>/dev/null
 
-    # Same refusal guard + empty fallback + on-device ceiling trim as the normal
-    # summarizer path below (kept in sync deliberately).
-    case "$SUMMARY" in
-      *申し訳ありませんが*|*ロールプレイ*|*応答はできません*|*お応えできません*|*"I can't"*|*"I cannot"*|*要約の対象*|*前のメッセージ*|*提供されていない*)
-        log fallback "summarizer refused style, using cleaned text"
-        SUMMARY="" ;;
-    esac
+    # Same empty fallback + on-device ceiling trim as the normal summarizer path
+    # below. The refusal guard is now one shared function, so it can't drift.
+    if summarizer_refused "$SUMMARY"; then
+      log fallback "summarizer refused or had nothing to summarize, using cleaned text"
+      SUMMARY=""
+    fi
     [ -z "$SUMMARY" ] && SUMMARY="${CLEANED_TRIMMED:0:120}"
     PIPE_SMAX="$(ondevice_max_chars)"
     if [ "$(get_tts_backend summary)" = "ondevice" ] && [ "${#SUMMARY}" -gt "$PIPE_SMAX" ]; then
@@ -178,19 +210,23 @@ fi
 PERSONA_STYLE="$(get_persona_style)"
 SUMMARY_PROMPT="${BASE_PROMPT_PREFIX} ${PERSONA_STYLE} ${BASE_PROMPT_SUFFIX}"
 
-SUMMARY="$(printf '%s' "$CLEANED_TRIMMED" | claude --safe-mode -p --model haiku "$SUMMARY_PROMPT" 2>/dev/null)"
+if [ "${#CLEANED_TRIMMED}" -lt "$SUMMARY_MIN_CHARS" ]; then
+  # Too short to summarize (see SUMMARY_MIN_CHARS above) — read it as it is.
+  log skip "only ${#CLEANED_TRIMMED} chars left, reading as-is instead of summarizing"
+  SUMMARY="$CLEANED_TRIMMED"
+else
+  SUMMARY="$(printf '%s' "$CLEANED_TRIMMED" | claude --safe-mode -p --model haiku "$SUMMARY_PROMPT" 2>/dev/null)"
 
-# If the summarizer refused the style instruction, reading the refusal aloud
-# is worse than a plain readout — fall back to the cleaned text instead.
-# Match only refusal-specific phrasing: the sweet tone itself legitimately
-# produces 「申し訳ないのよ」 in apology summaries, so plain 申し訳/できません
-# would throw those away too.
-case "$SUMMARY" in
-  *申し訳ありませんが*|*ロールプレイ*|*応答はできません*|*お応えできません*|*"I can't"*|*"I cannot"*|*要約の対象*|*前のメッセージ*|*提供されていない*)
-    log fallback "summarizer refused style, using cleaned text"
+  # If the summarizer refused the style instruction, reading the refusal aloud
+  # is worse than a plain readout — fall back to the cleaned text instead.
+  # Match only refusal-specific phrasing: the sweet tone itself legitimately
+  # produces 「申し訳ないのよ」 in apology summaries, so plain 申し訳/できません
+  # would throw those away too.
+  if summarizer_refused "$SUMMARY"; then
+    log fallback "summarizer refused or had nothing to summarize, using cleaned text"
     SUMMARY=""
-    ;;
-esac
+  fi
+fi
 
 if [ -z "$SUMMARY" ]; then
   # Fallback: no LLM summary available, just read the cleaned text head.
