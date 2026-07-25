@@ -12,6 +12,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/readout-switch.sh notify",
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/statusline.sh --repair",
+            "async": true
           }
         ]
       }

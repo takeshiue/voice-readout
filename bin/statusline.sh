@@ -35,7 +35,7 @@ set -u
 # Placed first so the render path — which is called with no arguments on every
 # single frame — pays one string comparison and nothing else.
 case "${1:-}" in
-  --install|--uninstall)
+  --install|--uninstall|--repair)
     ACTION="$1"; shift
     # Which settings file. Written to the USER's settings, never a project's:
     # the plugin is enabled globally, so its status line belongs to every
@@ -51,9 +51,10 @@ case "${1:-}" in
     # or we would write to a file nothing reads.
     SETTINGS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
     FORCE=0
+    FILE_GIVEN=0
     while [ $# -gt 0 ]; do
       case "$1" in
-        --file) SETTINGS="${2:-}"; shift 2 ;;
+        --file) SETTINGS="${2:-}"; FILE_GIVEN=1; shift 2 ;;
         --force) FORCE=1; shift ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
       esac
@@ -88,6 +89,66 @@ case "${1:-}" in
       esac
       return 1
     }
+
+    # --repair: run from the SessionStart hook, not by hand.
+    #
+    # A marketplace install unpacks this script under
+    # .../cache/<plugin>/<version>/, so upgrading the plugin MOVES it and the
+    # absolute path sitting in settings.json goes stale. The status line then
+    # simply stops appearing — no error, no clue, same silent failure as the
+    # unexpanded ${CLAUDE_PLUGIN_ROOT} form. Hooks, unlike statusLine, ARE
+    # plugin components and do get ${CLAUDE_PLUGIN_ROOT} expanded, so the hook
+    # always reaches the current copy; the current copy knows where it lives and
+    # can put the path back.
+    #
+    # Checked every session because nothing announces "you were just upgraded",
+    # and a check is two file reads. WRITING happens only when the stored value
+    # actually differs, so the ordinary session touches nothing and leaves no
+    # backup churn.
+    #
+    # It repairs, it never installs: an absent registration stays absent.
+    # Enabling a plugin is not consent to have a status line appear, and the
+    # user may have removed it on purpose — re-adding it every launch would make
+    # it impossible to get rid of.
+    #
+    # Silent by design. A SessionStart hook's stdout is fed to Claude as
+    # context, so anything printed here would show up in the conversation every
+    # single launch; the repair is recorded in the plugin log instead.
+    if [ "$ACTION" = "--repair" ]; then
+      command -v jq >/dev/null 2>&1 || exit 0
+      TARGETS="$SETTINGS"
+      # Hooks — unlike a hand-run script — are given CLAUDE_PROJECT_DIR, so the
+      # project pair can be repaired too rather than only warned about. A
+      # project file is only ever touched if it already points at this plugin.
+      if [ "$FILE_GIVEN" -eq 0 ] && [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
+        TARGETS="$TARGETS
+${CLAUDE_PROJECT_DIR}/.claude/settings.json
+${CLAUDE_PROJECT_DIR}/.claude/settings.local.json"
+      fi
+
+      while IFS= read -r sf; do
+        [ -n "$sf" ] && [ -f "$sf" ] || continue
+        cur="$(jq -r '.statusLine.command // ""' "$sf" 2>/dev/null)" || continue
+        [ -n "$cur" ] || continue                 # not registered: leave it so
+        is_ours "$cur" || continue                # someone else's: not ours to move
+        [ "$cur" = "$SELF" ] && continue          # already right: no write
+        cp "$sf" "${sf}.bak-voice-readout" 2>/dev/null
+        if jq --arg cmd "$SELF" '.statusLine = {type: "command", command: $cmd}' \
+             "$sf" > "${sf}.tmp" 2>/dev/null && [ -s "${sf}.tmp" ]; then
+          mv "${sf}.tmp" "$sf"
+          if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -d "${CLAUDE_PLUGIN_DATA}" ]; then
+            printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" info \
+              "statusline: repaired stale path in ${sf}: ${cur} -> ${SELF}" \
+              >> "${CLAUDE_PLUGIN_DATA}/voice-readout.log" 2>/dev/null
+          fi
+        else
+          rm -f "${sf}.tmp"
+        fi
+      done <<EOF
+$TARGETS
+EOF
+      exit 0
+    fi
 
     if ! command -v jq >/dev/null 2>&1; then
       echo "jq が無いので settings.json を編集できません。次の行を手で追加してください:" >&2
@@ -173,6 +234,8 @@ case "${1:-}" in
     ;;
   --help|-h)
     echo "Usage: statusline.sh [--install|--uninstall] [--file <settings.json>] [--force]"
+    echo "  --repair は SessionStart フックが呼ぶ内部用。登録済みのパスが古ければ書き直します"
+    echo "  （未登録なら何もしません）。"
     echo "  引数なしで実行すると、Claude Code の statusLine コマンドとして1行を出力します。"
     exit 0
     ;;
