@@ -81,11 +81,31 @@ get_tuning() {
   printf '%s' "$default"
 }
 
+# Integer knobs, validated. get_tuning above returns whatever the config file
+# says, and several of those values land in a bash arithmetic context — either
+# $(( ... )) directly or a ${text:0:$n} slice, which is arithmetic too. Bash
+# evaluates an array subscript inside such an expression, and a subscript may
+# contain a command substitution, so a config value of
+#   TTS_RETRY_WAIT_BASE=w[$(id > /tmp/pwned)]
+# executes that command when the retry backoff is computed (verified
+# 2026-07-25). That turns "can write the config file" into "runs commands as
+# the plugin", which is a much bigger step than it looks. Any value that is not
+# a plain non-negative integer falls back to the built-in default — a typo in a
+# hand-edited config should give the shipped behaviour, not a broken readout.
+get_tuning_num() {
+  local key="$1" default="$2" val
+  val="$(get_tuning "$key" "$default")"
+  case "$val" in
+    ''|*[!0-9]*) printf '%s' "$default" ;;
+    *)           printf '%s' "$val" ;;
+  esac
+}
+
 LOG_FILE="${PLUGIN_DATA_DIR}/voice-readout.log"
 # This file is appended to indefinitely across sessions with nothing else
 # trimming it, so self-rotate once it grows past a threshold instead of
 # growing forever.
-LOG_MAX_BYTES="$(get_tuning LOG_MAX_BYTES 1048576)"
+LOG_MAX_BYTES="$(get_tuning_num LOG_MAX_BYTES 1048576)"
 log() {
   local size=0
   # Guarded on existence rather than relying on `2>/dev/null`: that silences
@@ -282,7 +302,7 @@ notify_failure() {
   # A stuck engine fails on every response, which used to fire one
   # notification per response. Suppress repeats within the cooldown window.
   local stamp_file="${PLUGIN_DATA_DIR}/voice-readout-last-notify"
-  local cooldown="$(get_tuning NOTIFY_COOLDOWN 1800)"
+  local cooldown="$(get_tuning_num NOTIFY_COOLDOWN 1800)"
   local now last
   now="$(date +%s)"
   last="$(cat "$stamp_file" 2>/dev/null || echo 0)"
@@ -491,7 +511,7 @@ readout_is_speaking() {
 # callers that would rather shorten their text than be refused (the Stop
 # hook's summary path) can ask instead of hardcoding it.
 ondevice_max_chars() {
-  printf '%s' "$(get_tuning ONDEVICE_MAX_CHARS 240)"
+  printf '%s' "$(get_tuning_num ONDEVICE_MAX_CHARS 240)"
 }
 
 # Spoken as a short preface when an over-length readout is degraded to a summary
@@ -639,7 +659,7 @@ precleanup_stuck_tts() {
 engine_is_responsive() {
   # </dev/null: termux-* wrappers drain any stdin they inherit, which would
   # eat a caller's loop input (see the chunk-array comment in speak()).
-  if timeout "$(get_tuning PREFLIGHT_TIMEOUT 10)" termux-tts-engines >/dev/null 2>&1 </dev/null; then
+  if timeout "$(get_tuning_num PREFLIGHT_TIMEOUT 10)" termux-tts-engines >/dev/null 2>&1 </dev/null; then
     return 0
   fi
   # timeout signals the sh wrapper; the libexec/termux-api grandchild it
@@ -771,7 +791,7 @@ speak_gemini() {
   # 20s used to be enough, but a long full-mode readout (200+ chars) can
   # legitimately take Gemini past that and curl aborts with an empty body,
   # which reads as a generic API failure — observed 2026-07-20 benchmarking.
-  response="$(curl -sS --max-time "$(get_tuning CLOUD_HTTP_TIMEOUT 45)" \
+  response="$(curl -sS --max-time "$(get_tuning_num CLOUD_HTTP_TIMEOUT 45)" \
     "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${api_key}" \
     -H 'Content-Type: application/json' \
     -d "$payload" 2>/dev/null)"
@@ -870,7 +890,7 @@ speak_inworld() {
 
   # Matches the Gemini backend's cap — see the comment there for why 20s
   # wasn't enough for long full-mode readouts.
-  response="$(curl -sS --max-time "$(get_tuning CLOUD_HTTP_TIMEOUT 45)" \
+  response="$(curl -sS --max-time "$(get_tuning_num CLOUD_HTTP_TIMEOUT 45)" \
     "https://api.inworld.ai/tts/v1/voice" \
     -H "Authorization: Basic ${api_key}" \
     -H 'Content-Type: application/json' \
@@ -966,7 +986,7 @@ speak_elevenlabs() {
   fi
   local mp3_file="$scratch_dir/audio-$$.mp3"
 
-  http_code="$(curl -sS --max-time "$(get_tuning CLOUD_HTTP_TIMEOUT 45)" -w '%{http_code}' \
+  http_code="$(curl -sS --max-time "$(get_tuning_num CLOUD_HTTP_TIMEOUT 45)" -w '%{http_code}' \
     -X POST "https://api.elevenlabs.io/v1/text-to-speech/${voice}" \
     -H "xi-api-key: ${api_key}" \
     -H 'Content-Type: application/json' \
@@ -1148,7 +1168,7 @@ gen_gemini() {
     spoken="Read the following Japanese text aloud naturally, at about ${speed}x the normal speaking pace — noticeably faster and crisper than the default, but still clear. Do not read this instruction."$'\n\n'"${text}"
   fi
   payload="$(jq -n --arg text "$spoken" --arg voice "$voice" '{contents:[{parts:[{text:$text}]}],generationConfig:{responseModalities:["AUDIO"],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:$voice}}}}}')"
-  response="$(curl -sS --max-time "$(get_tuning CLOUD_HTTP_TIMEOUT 45)" "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${api_key}" -H 'Content-Type: application/json' -d "$payload" 2>/dev/null)"
+  response="$(curl -sS --max-time "$(get_tuning_num CLOUD_HTTP_TIMEOUT 45)" "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${api_key}" -H 'Content-Type: application/json' -d "$payload" 2>/dev/null)"
   audio_b64="$(printf '%s' "$response" | jq -r '.candidates[0].content.parts[0].inlineData.data // empty' 2>/dev/null)"
   [ -z "$audio_b64" ] && { log error "gemini TTS request failed: $(printf '%s' "$response" | tr -d '\n' | cut -c1-160)"; return 1; }
   pcm="${out%.wav}.pcm"
@@ -1174,7 +1194,7 @@ gen_inworld() {
   rate="$(resolve_speed INWORLD_SPEAKING_RATE 1.11)"
   case "$rate" in ''|*[!0-9.]*) rate=1.3 ;; esac
   payload="$(jq -n --arg text "$text" --arg voice "$voice" --arg model "$model" --arg lang "$lang" --argjson rate "$rate" '{text:$text,voiceId:$voice,modelId:$model,language:$lang,audioConfig:{audioEncoding:"LINEAR16",sampleRateHertz:24000,speakingRate:$rate}}')"
-  response="$(curl -sS --max-time "$(get_tuning CLOUD_HTTP_TIMEOUT 45)" "https://api.inworld.ai/tts/v1/voice" -H "Authorization: Basic ${api_key}" -H 'Content-Type: application/json' -d "$payload" 2>/dev/null)"
+  response="$(curl -sS --max-time "$(get_tuning_num CLOUD_HTTP_TIMEOUT 45)" "https://api.inworld.ai/tts/v1/voice" -H "Authorization: Basic ${api_key}" -H 'Content-Type: application/json' -d "$payload" 2>/dev/null)"
   audio_b64="$(printf '%s' "$response" | jq -r '.audioContent // empty' 2>/dev/null)"
   [ -z "$audio_b64" ] && { log error "inworld TTS request failed: $(printf '%s' "$response" | tr -d '\n' | cut -c1-160)"; return 1; }
   printf '%s' "$audio_b64" | base64 -d > "$out" 2>/dev/null
@@ -1198,7 +1218,7 @@ gen_elevenlabs() {
   case "$speed" in ''|*[!0-9.]*) speed=1.0 ;; esac
   payload="$(jq -n --arg text "$text" --arg model "$model" --argjson speed "$speed" '{text:$text, model_id:$model, voice_settings:{speed:$speed}}')"
   raw="${out%.mp3}-raw.mp3"
-  http="$(curl -sS --max-time "$(get_tuning CLOUD_HTTP_TIMEOUT 45)" -w '%{http_code}' -X POST "https://api.elevenlabs.io/v1/text-to-speech/${voice}" -H "xi-api-key: ${api_key}" -H 'Content-Type: application/json' -d "$payload" -o "$raw" 2>/dev/null)"
+  http="$(curl -sS --max-time "$(get_tuning_num CLOUD_HTTP_TIMEOUT 45)" -w '%{http_code}' -X POST "https://api.elevenlabs.io/v1/text-to-speech/${voice}" -H "xi-api-key: ${api_key}" -H 'Content-Type: application/json' -d "$payload" -o "$raw" 2>/dev/null)"
   if [ "$http" != "200" ] || [ ! -s "$raw" ]; then
     log error "elevenlabs TTS request failed (http ${http}): $(head -c 160 "$raw" 2>/dev/null | tr -d '\n')"; rm -f "$raw"; return 1
   fi
@@ -1356,8 +1376,8 @@ speak_cloud_chunked() {
   fi
 
   local chunk_max first_max play_lead chunks=() c
-  chunk_max="$(get_tuning CLOUD_CHUNK_CHARS 200)"
-  first_max="$(get_tuning CLOUD_FIRST_CHUNK_CHARS 80)"
+  chunk_max="$(get_tuning_num CLOUD_CHUNK_CHARS 200)"
+  first_max="$(get_tuning_num CLOUD_FIRST_CHUNK_CHARS 80)"
   # Seconds to issue the next chunk's play before the current one ends, so the
   # next chunk's prepare overlaps this tail (see _play_media_file). 0 disables
   # the overlap. Validate numeric.
@@ -1550,7 +1570,7 @@ speak() {
         # readout is slower; the safety net is not lost). Fewer probes also means
         # one less engine-binding operation to collide with a concurrent call.
         local warm_window last_spoke now_secs skip_preflight=0
-        warm_window="$(get_tuning WARM_SKIP_WINDOW 120)"
+        warm_window="$(get_tuning_num WARM_SKIP_WINDOW 120)"
         if [ "$warm_window" -gt 0 ] 2>/dev/null; then
           last_spoke="$(cat "$ONDEVICE_LASTSPOKE_FILE" 2>/dev/null)"
           now_secs="$(date +%s)"
@@ -1601,11 +1621,11 @@ speak() {
         # above regardless of wake-locking, so speak it as several short
         # calls instead — each chunk gets its own timeout scaled the same way
         # the whole text used to.
-        local chunk_max="$(get_tuning TTS_CHUNK_CHARS 100)"
-        local chunk_retries="$(get_tuning TTS_CHUNK_RETRIES 4)"
+        local chunk_max="$(get_tuning_num TTS_CHUNK_CHARS 100)"
+        local chunk_retries="$(get_tuning_num TTS_CHUNK_RETRIES 4)"
         # Linear backoff between attempts: base, 2x base, 3x base, capped.
-        local retry_wait_base="$(get_tuning TTS_RETRY_WAIT_BASE 20)"
-        local retry_wait_max="$(get_tuning TTS_RETRY_WAIT 90)"
+        local retry_wait_base="$(get_tuning_num TTS_RETRY_WAIT_BASE 20)"
+        local retry_wait_max="$(get_tuning_num TTS_RETRY_WAIT 90)"
         # Collect every chunk up front rather than streaming them into a
         # `while read` loop. termux-tts-speak / termux-tts-engines drain
         # whatever stdin they inherit (verified 2026-07-20: a 7-item loop ran

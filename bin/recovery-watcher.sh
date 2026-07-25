@@ -29,7 +29,7 @@ flock -n 9 || exit 0
 # child it leaks, but the attempt itself still lands on a wedged engine), so
 # probe sparingly — a tight interval turns "watch for recovery" into "keep the
 # engine too busy to recover". 2026-07-20.
-INTERVAL="$(get_tuning WATCH_INTERVAL 120)"
+INTERVAL="$(get_tuning_num WATCH_INTERVAL 120)"
 MAX_TRIES="${VOICE_READOUT_WATCH_TRIES:-30}"
 
 log watcher "started (interval ${INTERVAL}s, max ${MAX_TRIES} tries)"

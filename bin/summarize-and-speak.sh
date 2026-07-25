@@ -81,7 +81,7 @@ READOUT_MODE="$(get_readout_mode)"
 # produce that reply. Below this length a summary can't beat the text itself
 # anyway, so skip the model — which also drops the ~10-16s summarizer wait from
 # every short reply.
-SUMMARY_MIN_CHARS="$(get_tuning SUMMARY_MIN_CHARS 40)"
+SUMMARY_MIN_CHARS="$(get_tuning_num SUMMARY_MIN_CHARS 40)"
 
 # Every phrasing meaning "you gave me nothing to summarize" that has been seen
 # in the log or reproduced, plus the style refusals. One function rather than
@@ -176,7 +176,7 @@ if [ "$READOUT_MODE" = "full" ]; then
     # long enough to cover the background summarizer (measured ~30s for the
     # `claude -p` cold start), because the bridge is now a ~3s clip rather than a
     # ~12s TTS phrase and so hides much less of that wait on its own.
-    PIPE_OPEN_MAX="$(get_tuning OVERFLOW_OPENING_CHARS 150)"
+    PIPE_OPEN_MAX="$(get_tuning_num OVERFLOW_OPENING_CHARS 150)"
     PIPE_OPENING="${CLEANED_TRIMMED:0:$PIPE_OPEN_MAX}"
     PIPE_CUT="$(printf '%s' "$PIPE_OPENING" | sed -E 's/(.*[。！？、]).*/\1/')"
     [ -n "$PIPE_CUT" ] && PIPE_OPENING="$PIPE_CUT"
