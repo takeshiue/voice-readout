@@ -70,7 +70,9 @@ Android スマホ
 
 ## インストール方法
 
-前提として、以下が入っている必要がある（どちらの層に入れるかは [動作環境](#動作環境構成) も参照）：
+### 前提を揃える
+
+以下が入っている必要がある（どちらの層に入れるかは [動作環境](#動作環境構成) も参照）：
 
 **Android / Termux 側**
 
@@ -84,13 +86,44 @@ Android スマホ
 - `jq`（JSON パース用。フックが proot 側で使う。`apt install jq`）
 - Termux の bin に PATH が通っていること（`export PATH="$PATH:/data/data/com.termux/files/usr/bin"`）
 
-プラグイン自体はこのリポジトリ（`voice-readout` マーケットプレイス）経由で有効化する。`~/.claude/settings.json` の `enabledPlugins` に以下が入っていれば有効：
+### プラグインを入れる
+
+このリポジトリ自体がマーケットプレイスを兼ねている（`.claude-plugin/marketplace.json` を同梱）。Claude Code の中で次の2つを打つ：
+
+```
+/plugin marketplace add takeshiue/voice-readout
+/plugin install voice-readout@voice-readout
+```
+
+1行目でこのリポジトリをマーケットプレイスとして登録し、2行目でその中の `voice-readout` プラグインを入れる。`/plugin` だけを打つと対話メニューが開くので、そちらから選んでもよい。
+
+**中身を書き換えて使いたい場合**は、クローンしてローカルのディレクトリを登録する（`git pull` した内容がそのまま反映され、自分の変更も即座に効く）：
+
+```sh
+git clone https://github.com/takeshiue/voice-readout.git
+```
+```
+/plugin marketplace add /クローンした場所/voice-readout
+/plugin install voice-readout@voice-readout
+```
+
+どちらの入れ方でも、有効になると `~/.claude/settings.json` の `enabledPlugins` に次の行が入る（手で書いても同じ）：
 
 ```json
 "voice-readout@voice-readout": true
 ```
 
-インストール直後は追加設定なしで動く（要約モード・全読み上げオンがデフォルト）。バッテリー最適化でアプリがバックグラウンド終了されるとハングの原因になるため、**Termux:API と Google 音声サービスの両方を「バッテリー使用量→制限なし」に設定しておく**ことを推奨する（設定→アプリ→各アプリ→バッテリー使用量）。
+### 動いたことを確認する
+
+**フックは Claude Code の起動時に読み込まれるので、インストール後に一度再起動する。** 起動して「ボイスリードアウト、準備できたよ」と聞こえれば成功。聞こえない場合は [声が聞こえないとき](#故障時の対応読み上げが聞こえないとき) を参照。
+
+インストール直後は追加設定なしで動く（要約モード・全読み上げオンがデフォルト）。
+
+### 推奨設定
+
+バッテリー最適化でアプリがバックグラウンド終了されるとハングの原因になるため、**Termux:API と Google 音声サービスの両方を「バッテリー使用量→制限なし」に設定しておく**ことを推奨する（設定→アプリ→各アプリ→バッテリー使用量）。
+
+ステータスライン（今どの機能がオンかの常時表示）を使う場合は、別途 `settings.json` への登録が必要 → [ステータスライン](#ステータスライン今の状態を一目で見る)
 
 ## 使えるオプション
 
