@@ -54,8 +54,24 @@
 #   elevenlabs-key  sets/clears the ElevenLabs API key used by the elevenlabs backend
 set -eu
 
-CONFIG_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-config"
-ENV_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout.env"
+# Same resolution as tts-lib.sh's PLUGIN_DATA_DIR — kept in step with it by
+# hand rather than sourced, because this script is standalone and runs under
+# `set -eu`. See the long comment there for why the old /tmp fallback had to
+# go: THIS script is the one that wrote API keys into it, since it is normally
+# run from a terminal, where Claude Code sets no CLAUDE_PLUGIN_DATA.
+if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
+  PLUGIN_DATA_DIR="$CLAUDE_PLUGIN_DATA"
+elif [ -n "${HOME:-}" ]; then
+  PLUGIN_DATA_DIR="${HOME}/.claude/plugins/data/voice-readout-voice-readout"
+else
+  PLUGIN_DATA_DIR="${TMPDIR:-/tmp}/voice-readout-$(id -u 2>/dev/null || echo 0)"
+fi
+[ -d "$PLUGIN_DATA_DIR" ] || {
+  mkdir -p "$PLUGIN_DATA_DIR" 2>/dev/null && chmod 700 "$PLUGIN_DATA_DIR" 2>/dev/null
+}
+
+CONFIG_FILE="${PLUGIN_DATA_DIR}/voice-readout-config"
+ENV_FILE="${PLUGIN_DATA_DIR}/voice-readout.env"
 
 usage() {
   echo "Usage: $0 <stop|notification|all|greeting|farewell|overflow-pipeline|chunk-marker> <on|off>" >&2

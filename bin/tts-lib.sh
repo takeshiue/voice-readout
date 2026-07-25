@@ -30,11 +30,40 @@ CHUNK_MARKER_CLIP="${PLUGIN_ROOT_DIR}/assets/chunk-marker.wav"
 # crashed hook for someone who is listening rather than looking.
 CODE_ONLY_CLIP="${PLUGIN_ROOT_DIR}/assets/code-only.wav"
 
+# Where this plugin's own state lives: config, API keys, log, locks, the queue.
+#
+# Claude Code sets CLAUDE_PLUGIN_DATA when it runs a hook, but NOT for anything
+# invoked by hand — bin/toggle.sh from a terminal, bin/speak-text.sh, the
+# recovery watcher. Every path here used to fall back to /tmp in that case,
+# which was wrong twice over. The documented key-setup step (docs/design.md:
+# 「ターミナルで bin/toggle.sh gemini-key <キー>」) therefore wrote all three
+# cloud API keys into /tmp — a world-writable directory on any shared host —
+# and the hooks, which DO have the variable, then read a different file, so the
+# key silently never took effect. Both symptoms, one cause.
+#
+# So: fall back to the plugin's real data directory (the same path
+# bin/statusline.sh resolves, for the same reason) and never to /tmp. The
+# directory is created 0700 when it doesn't exist yet, because API keys live in
+# it.
+if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
+  PLUGIN_DATA_DIR="$CLAUDE_PLUGIN_DATA"
+elif [ -n "${HOME:-}" ]; then
+  PLUGIN_DATA_DIR="${HOME}/.claude/plugins/data/voice-readout-voice-readout"
+else
+  # Neither variable set — a stripped environment no normal run reaches. A
+  # shared /tmp is still not somewhere an API key may go, so use a per-uid
+  # directory that only its owner can open.
+  PLUGIN_DATA_DIR="${TMPDIR:-/tmp}/voice-readout-$(id -u 2>/dev/null || echo 0)"
+fi
+[ -d "$PLUGIN_DATA_DIR" ] || {
+  mkdir -p "$PLUGIN_DATA_DIR" 2>/dev/null && chmod 700 "$PLUGIN_DATA_DIR" 2>/dev/null
+}
+
 # Persisted settings live here (written by bin/toggle.sh, seeded by
 # `toggle.sh init`). Defined up front because the tuning values below read from
 # it. A missing file or missing key falls through to a built-in default, so a
 # fresh install works with zero setup.
-CONFIG_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-config"
+CONFIG_FILE="${PLUGIN_DATA_DIR}/voice-readout-config"
 
 # Resolve a tuning knob: an explicit env override (VOICE_READOUT_<KEY>) wins for
 # throwaway one-off runs, then the value stored in CONFIG_FILE (<KEY>=...), then
@@ -52,7 +81,7 @@ get_tuning() {
   printf '%s' "$default"
 }
 
-LOG_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout.log"
+LOG_FILE="${PLUGIN_DATA_DIR}/voice-readout.log"
 # This file is appended to indefinitely across sessions with nothing else
 # trimming it, so self-rotate once it grows past a threshold instead of
 # growing forever.
@@ -199,7 +228,7 @@ get_tts_backend() {
 # line), written/cleared via bin/toggle.sh's *-key subcommands. Read with
 # `cut -d= -f2-` (not -f2): base64 keys end in "=" padding, so splitting on
 # every "=" instead of just the first would truncate the value.
-ENV_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout.env"
+ENV_FILE="${PLUGIN_DATA_DIR}/voice-readout.env"
 get_env_value() {
   local key="$1"
   [ -f "$ENV_FILE" ] || return 0
@@ -208,7 +237,7 @@ get_env_value() {
 
 # Legacy per-key file from before keys were consolidated into voice-readout.env
 # (kept so installs that already ran `toggle.sh gemini-key` don't lose it).
-GEMINI_KEY_FILE_LEGACY="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-gemini-key"
+GEMINI_KEY_FILE_LEGACY="${PLUGIN_DATA_DIR}/voice-readout-gemini-key"
 get_gemini_api_key() {
   if [ -n "${VOICE_READOUT_GEMINI_API_KEY:-}" ]; then
     printf '%s' "$VOICE_READOUT_GEMINI_API_KEY"
@@ -252,7 +281,7 @@ notify_failure() {
 
   # A stuck engine fails on every response, which used to fire one
   # notification per response. Suppress repeats within the cooldown window.
-  local stamp_file="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-last-notify"
+  local stamp_file="${PLUGIN_DATA_DIR}/voice-readout-last-notify"
   local cooldown="$(get_tuning NOTIFY_COOLDOWN 1800)"
   local now last
   now="$(date +%s)"
@@ -300,7 +329,7 @@ start_recovery_watcher() {
 # Once a readout succeeds again, recovery instructions are stale — clear them
 # and reset the cooldown so the next hang episode notifies promptly.
 clear_failure_notifications() {
-  local stamp_file="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-last-notify"
+  local stamp_file="${PLUGIN_DATA_DIR}/voice-readout-last-notify"
   [ -f "$stamp_file" ] || return 0
   rm -f "$stamp_file" 2>/dev/null
   if command -v termux-notification-remove >/dev/null 2>&1; then
@@ -314,13 +343,13 @@ clear_failure_notifications() {
 # termux-tts-speak. Lets a later invocation tell a legitimately-still-speaking
 # process from a truly stuck one (see precleanup_stuck_tts below) instead of
 # guessing from process liveness alone.
-ONDEVICE_LOCK_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-ondevice.lock"
+ONDEVICE_LOCK_FILE="${PLUGIN_DATA_DIR}/voice-readout-ondevice.lock"
 
 # Epoch seconds of the last fully-successful on-device readout. Used to skip the
 # ~2s preflight probe when the engine was confirmed working very recently (it is
 # still warm, so re-probing it only adds latency to every follow-up readout in
 # an active conversation). Written on success below; read at the preflight gate.
-ONDEVICE_LASTSPOKE_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-ondevice-lastspoke"
+ONDEVICE_LASTSPOKE_FILE="${PLUGIN_DATA_DIR}/voice-readout-ondevice-lastspoke"
 
 # Marks a response readout as in flight, as "pid:deadline_epoch" (same shape as
 # ONDEVICE_LOCK_FILE above). Exists because termux-media-player is a single
@@ -333,7 +362,7 @@ ONDEVICE_LASTSPOKE_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-ondevice-last
 # heard). The Notification hook checks this marker and drops the idle notice
 # while a readout is speaking; the audio ending is itself the cue that it is
 # the user's turn.
-SPEAKING_MARKER_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-speaking"
+SPEAKING_MARKER_FILE="${PLUGIN_DATA_DIR}/voice-readout-speaking"
 # Identifies this readout in the names of its chunk audio files, so two
 # readouts can never write to each other's (see _cloud_audio_path). The pid is
 # stable across the background generator subshells, which is what makes it
@@ -360,7 +389,7 @@ SPEAKING_MARKER_MAX=900
 # "<nanoseconds>.<pid>" so a plain sort is arrival order and no lock is needed
 # to join. A readout speaks once it is at the head and nobody holds the
 # speaking marker.
-READOUT_QUEUE_DIR="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-queue"
+READOUT_QUEUE_DIR="${PLUGIN_DATA_DIR}/voice-readout-queue"
 # Longest a queued readout waits for its turn before going ahead regardless.
 # Only reachable if a predecessor wedges in a way the liveness checks miss;
 # speaking late beats never speaking.

@@ -77,7 +77,9 @@ Google 音声認識と音声合成サービス（実際に声を合成するエ�
 | 故障傾向 | 今日ずっと対処してきたハング（Google エンジン／Termux:API 側の詰まり）が起きうる | Gemini 側は今のところ未検証。API 障害時は自動でオンデバイス側にフォールバックする | Inworld 側も今のところ未検証。API 障害時は自動でオンデバイス側にフォールバックする | ElevenLabs 側も今のところ未検証。API 障害時は自動でオンデバイス側にフォールバックする |
 | セットアップ | 不要（インストール直後から動く） | [Google AI Studio](https://aistudio.google.com/) で API キーを取得し、`toggle.sh gemini-key <キー>` で設定する必要がある | [Inworld Portal](https://platform.inworld.ai/) で API キーを取得し、`toggle.sh inworld-key <キー>` で設定する必要がある | [ElevenLabs](https://elevenlabs.io/) で API キーを取得し、`toggle.sh elevenlabs-key <キー>` で設定する必要がある |
 
-**API キーの保存場所**：Gemini・Inworld・ElevenLabs 共通で `${CLAUDE_PLUGIN_DATA}/voice-readout.env` に `KEY=値` の形式でまとめて保存される（`chmod 600`）。バックエンドが増えてもこの1ファイルにキーが集約される設計。
+**API キーの保存場所**：Gemini・Inworld・ElevenLabs 共通で、プラグインのデータディレクトリの `voice-readout.env` に `KEY=値` の形式でまとめて保存される（ファイルは `600`、ディレクトリは `700`）。バックエンドが増えてもこの1ファイルにキーが集約される設計。
+
+データディレクトリは、フック実行時は Claude Code が渡す `${CLAUDE_PLUGIN_DATA}`、それ以外（ターミナルから `toggle.sh` を叩いたときなど）は `~/.claude/plugins/data/voice-readout-voice-readout/` に解決される。**以前はこの後者が `/tmp` にフォールバックしていた**ため、上の手順どおりターミナルでキーを登録すると共有ディレクトリにキーが書かれ、しかもフック側は別のファイルを読むので登録したキーが効かない、という状態になっていた（2026-07-25 に修正）。`/tmp` にフォールバックすることはもう無い。
 
 > **API キーはチャットに貼らないこと。** 会話に書いた内容はトランスクリプトとして端末に保存され、モデルへの入力としても送られる。キーの登録だけは**ターミナルで直接コマンドを実行する**。切替のような他の操作はチャットからで構わない。
 

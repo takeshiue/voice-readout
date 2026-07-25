@@ -9,7 +9,10 @@ set -u
 
 source "$(dirname "$0")/tts-lib.sh"
 
-LOCK_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-watcher.lock"
+# PLUGIN_DATA_DIR comes from tts-lib.sh, sourced above: this watcher is started
+# detached from a hook and does not inherit CLAUDE_PLUGIN_DATA reliably, which
+# is exactly the case the shared resolver exists to handle.
+LOCK_FILE="${PLUGIN_DATA_DIR}/voice-readout-watcher.lock"
 
 # Single instance, race-free: two speak() failures in quick succession each
 # call start_recovery_watcher(), and a check-then-write PID file (the old

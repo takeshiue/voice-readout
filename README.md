@@ -126,7 +126,7 @@ git clone https://github.com/takeshiue/voice-readout.git
 
 ## 使えるオプション
 
-すべてチャットで「〜して」と頼むだけで切り替わる（裏で `bin/toggle.sh` が実行される）。設定は端末側の `${CLAUDE_PLUGIN_DATA}/voice-readout-config` に保存され、次回以降のセッションにも引き継がれる。
+すべてチャットで「〜して」と頼むだけで切り替わる（裏で `bin/toggle.sh` が実行される）。設定は端末側のデータディレクトリ（`${CLAUDE_PLUGIN_DATA}`、無い場合は `~/.claude/plugins/data/voice-readout-voice-readout/`）の `voice-readout-config` に保存され、次回以降のセッションにも引き継がれる。
 
 | 頼み方の例 | 効果 |
 |---|---|
@@ -155,7 +155,7 @@ git clone https://github.com/takeshiue/voice-readout.git
 
 ### 調整値（config ファイル）
 
-上のオン/オフ・モード・バックエンドに加えて、動作の細かな調整値もすべて同じ config ファイル（`${CLAUDE_PLUGIN_DATA}/voice-readout-config`）に集約されている。`toggle.sh init` が既定値で書き出すので、何が変えられるかはファイルを見れば分かる。変更は `toggle.sh tune <KEY> <VALUE>`（またはファイルを直接編集）。同名の環境変数 `VOICE_READOUT_<KEY>` を付ければ、その1回だけ config より優先される。
+上のオン/オフ・モード・バックエンドに加えて、動作の細かな調整値もすべて同じ config ファイル（データディレクトリの `voice-readout-config`）に集約されている。`toggle.sh init` が既定値で書き出すので、何が変えられるかはファイルを見れば分かる。変更は `toggle.sh tune <KEY> <VALUE>`（またはファイルを直接編集）。同名の環境変数 `VOICE_READOUT_<KEY>` を付ければ、その1回だけ config より優先される。
 
 | KEY | 既定 | 意味 |
 |---|---|---|
