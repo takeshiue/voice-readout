@@ -50,9 +50,9 @@ Android スマホ
 | 層 | 入れるもの | 入れ方 |
 |---|---|---|
 | Android / Termux | Termux 本体、**Termux:API アプリ**、`termux-api` パッケージ | Play ストア等＋ `pkg install termux-api` |
-| Ubuntu (proot) | Claude Code、このプラグイン、`jq` | Claude Code のインストール手順＋ `apt install jq` |
+| Ubuntu (proot) | Claude Code、このプラグイン、`jq`（＋クラウドTTSを使うなら `curl` `ffmpeg`） | Claude Code のインストール手順＋ `apt install jq curl ffmpeg` |
 
-> `jq`（JSON パース用）はフックが proot 側で使うので **Ubuntu 側に `apt install jq`**。Termux 側ではない点に注意。
+> **`termux-*` 以外はすべて proot 側に要る**。フックが動くのが proot 側だからで、`jq` を Termux 側に入れても読み上げは動かない。何がどの機能に要るかは [前提を揃える](#前提を揃える) の表を参照。
 
 ### 起動と利用の流れ
 
@@ -82,8 +82,38 @@ Android スマホ
 **Ubuntu (proot) 側**（Claude Code が動く層）
 
 - **Claude Code**
-- `jq`（JSON パース用。フックが proot 側で使う。`apt install jq`）
 - Termux の bin に PATH が通っていること（`export PATH="$PATH:/data/data/com.termux/files/usr/bin"`）
+- 下記のコマンド類
+
+フックは proot 側で動くので、**`termux-*` 以外はすべて proot 側に要る**。必要なものは使う機能によって変わる：
+
+| コマンド | 入れ方 | いつ要るか | 無いとどうなるか |
+|---|---|---|---|
+| `jq` | `apt install jq` | **常に**（フックが受け取る JSON を読む） | 読み上げが動かない |
+| `curl` | `apt install curl` | クラウドTTS（Gemini / Inworld / ElevenLabs）を使うとき | そのエンジンが失敗し、オンデバイスに落ちる |
+| `ffmpeg` | `apt install ffmpeg` | **Gemini は必須**（返ってくる生 PCM を WAV に変換するため）。ElevenLabs の音量・速度調整、チャンクマーカーにも使う | Gemini が使えない。ElevenLabs は音量・速度調整だけ効かなくなる |
+| `ffprobe` | `ffmpeg` に同梱 | ElevenLabs のチャンク再生 | 継ぎ目に数秒の無音が入る |
+| `flock` `setsid` | `util-linux`（通常は最初から入っている） | 復旧ウォッチャー／起動・終了の挨拶 | ウォッチャーが二重起動する／挨拶が鳴らない |
+| `ps` `pkill` | `procps`（同上） | エンジンの詰まり検出／アンインストール | 詰まりを自動復旧できない |
+
+`awk` `sed` `grep` `find` `timeout` `mktemp` `base64` などは Ubuntu の基本パッケージに含まれるので、通常は意識しなくてよい。
+
+オンデバイス読み上げだけで使うなら、**追加で入れるのは `jq` だけ**でよい。クラウドTTSまで使うなら `jq curl ffmpeg` の3つ：
+
+```sh
+apt install jq curl ffmpeg
+```
+
+入っているかどうかは、proot 側でこれを実行すれば一覧で分かる：
+
+```sh
+for c in jq curl ffmpeg ffprobe flock setsid ps \
+         termux-tts-speak termux-media-player termux-notification; do
+  command -v "$c" >/dev/null 2>&1 && echo "OK      $c" || echo "MISSING $c"
+done
+```
+
+`termux-*` が MISSING なら、Termux 側の `pkg install termux-api` か、PATH が通っていない。
 
 ### プラグインを入れる
 
