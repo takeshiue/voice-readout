@@ -128,23 +128,38 @@ set_key() {
   mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 }
 
-# API keys go in ENV_FILE, not CONFIG_FILE: base64 key values contain "/" and
-# "=" characters that would break set_key()'s sed substitution, so this
-# rewrites the file (filter out the old line, append the new one) instead.
+# API keys go in ENV_FILE, not CONFIG_FILE: they are secrets, and this is the
+# file the two writers below keep at 0600. (The original reason was narrower — a
+# base64 key's "/" and "=" broke set_key()'s sed substitution — but that
+# substitution is gone now, and keeping secrets in their own locked-down file is
+# the better reason anyway.)
+# umask first, chmod after: the file (and the .tmp it is rewritten through)
+# must never EXIST at the default 0644, not merely end up at 0600. The previous
+# form chmod'ed only at the end, so every key was world-readable for the moment
+# between being written and being locked down — and clear_env_key below had no
+# chmod at all, so clearing one key moved a fresh 0644 .tmp over the file and
+# left every REMAINING key world-readable for good (verified 2026-07-25).
 set_env_key() {
   local key="$1" value="$2"
+  local old_umask; old_umask="$(umask)"
+  umask 077
   touch "$ENV_FILE"
-  grep -v -E "^${key}=" "$ENV_FILE" > "${ENV_FILE}.tmp" 2>/dev/null || true
+  { grep -v -E "^${key}=" "$ENV_FILE" 2>/dev/null || true; printf '%s=%s\n' "$key" "$value"; } \
+    > "${ENV_FILE}.tmp"
   mv "${ENV_FILE}.tmp" "$ENV_FILE"
-  printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
   chmod 600 "$ENV_FILE"
+  umask "$old_umask"
 }
 
 clear_env_key() {
   local key="$1"
   [ -f "$ENV_FILE" ] || return 0
+  local old_umask; old_umask="$(umask)"
+  umask 077
   grep -v -E "^${key}=" "$ENV_FILE" > "${ENV_FILE}.tmp" 2>/dev/null || true
   mv "${ENV_FILE}.tmp" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  umask "$old_umask"
 }
 
 has_env_key() {
