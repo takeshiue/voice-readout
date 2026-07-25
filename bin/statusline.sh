@@ -3,13 +3,13 @@
 # Claude Code console, so "will the next response be spoken or not" is visible
 # at a glance. Reads the exact same config file and stop-switch path the hooks
 # use, so it can never disagree with what actually gets spoken. Looks like:
-#   greet 🔊🔇|notif 🔊 gemini|resp 🔊 sum inworld|×1.2
-#   greet 🔊🔊|notif 🔊 local|resp 🔊 full gemini|×1.3|🔔
+#   voice-readout|greet 🔊🔇|notif 🔊 gemini|resp 🔊 sum inworld|×1.2
+#   voice-readout|greet 🔊🔊|notif 🔊 local|resp 🔊 full gemini|×1.3|🔔
 # (×N = reading pace, 🔔 = chunk marker on)
 #
 # On a terminal too narrow for all of it, the segments wrap onto further rows
 # rather than being cut off:
-#   greet 🔊🔊|notif 🔊 inworld
+#   voice-readout|greet 🔊🔊|notif 🔊 inworld
 #   resp 🔊 full inworld|×1.3|🔔
 #
 # Wire it up in settings.json (NOT a plugin hook, so ${CLAUDE_PLUGIN_ROOT} is
@@ -102,7 +102,11 @@ cfg() {
 # no matter what resp/notif say. Show that instead of the per-toggle state so an
 # enabled toggle can't be mistaken for "it should be talking but isn't".
 if [ -e "$STOP_SWITCH_FILE" ]; then
-  printf '🛑 ALL MUTED'
+  # Named like every other state of this row: it is the one people stare at
+  # while wondering what stopped talking.
+  seg 'voice-readout'
+  seg '🛑 ALL MUTED'
+  emit
   exit 0
 fi
 
@@ -163,6 +167,10 @@ fi
 # "notif" begins. A plain ASCII pipe rather than a box-drawing bar: renders in
 # any terminal font, and costs one column. The pipe carries the boundary on its
 # own, so it gets no padding.
+# Which plugin this row belongs to. Spelled in English rather than カタカナ:
+# that rule exists for text the TTS engines have to pronounce (they read
+# "voice-readout" as レッドアウト), and nothing here is ever spoken.
+seg 'voice-readout'
 seg "$(printf 'greet %s%s' \
   "$(icon "$(cfg STARTUP_GREETING)")" "$(icon "$(cfg SESSION_END_GREETING)")")"
 seg "$(printf 'notif %s %s' \
