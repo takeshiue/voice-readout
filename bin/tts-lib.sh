@@ -113,10 +113,24 @@ log() {
   # and would still print on the very first call of a fresh install.
   if [ -f "$LOG_FILE" ]; then
     size="$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)"
+  else
+    # Create the log here at 0600 rather than letting the append below create it
+    # at the default umask. What accumulates in this file is a line per response
+    # summary and per notification — a running record of the conversation, in
+    # plain text, kept indefinitely. The containing directory is 0700, but a
+    # directory's mode is the wrong place to rest the whole defence: it is set
+    # once at creation and a reinstall or a manual mkdir puts it back to 0755.
+    : > "$LOG_FILE" 2>/dev/null && chmod 600 "$LOG_FILE" 2>/dev/null
   fi
   case "$size" in *[!0-9]*|"") size=0 ;; esac
   if [ "$size" -gt "$LOG_MAX_BYTES" ]; then
-    tail -n 500 "$LOG_FILE" > "${LOG_FILE}.tmp" 2>/dev/null && mv "${LOG_FILE}.tmp" "$LOG_FILE" 2>/dev/null
+    # The .tmp is a brand-new file at the default umask, so lock it down BEFORE
+    # it becomes the log — moving an 0644 temp file over an 0600 one is exactly
+    # how the API key file lost its permissions (fixed in toggle.sh, same date).
+    if tail -n 500 "$LOG_FILE" > "${LOG_FILE}.tmp" 2>/dev/null; then
+      chmod 600 "${LOG_FILE}.tmp" 2>/dev/null
+      mv "${LOG_FILE}.tmp" "$LOG_FILE" 2>/dev/null
+    fi
   fi
   printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" >> "$LOG_FILE" 2>/dev/null
 }
