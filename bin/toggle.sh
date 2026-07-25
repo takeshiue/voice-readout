@@ -5,7 +5,6 @@
 # Usage: toggle.sh <stop|notification|all|greeting|farewell|overflow-pipeline|chunk-marker> <on|off>
 #        toggle.sh mode <summary|full>
 #        toggle.sh speed <0.5-2.0>
-#        toggle.sh persona <on|off>
 #        toggle.sh backend <ondevice|gemini|inworld|elevenlabs>
 #        toggle.sh backend-<notification|summary|full|file> <ondevice|gemini|inworld|elevenlabs>
 #        toggle.sh tune <KEY> <VALUE>
@@ -30,8 +29,6 @@
 #                one number changes them all. Set a knob to a number to override.
 #   mode         summary = one-sentence Haiku summary (default)
 #                full    = verbatim readout of the response (minus code/URLs)
-#   persona      on  = apply the tone preset in personas/persona.md
-#                off = plain, short, neutral phrasing (default)
 #   backend      the default for every function
 #   backend-*    that one function's engine, overriding the default:
 #                notification = permission/idle prompts
@@ -57,17 +54,13 @@
 #   elevenlabs-key  sets/clears the ElevenLabs API key used by the elevenlabs backend
 set -eu
 
-PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-config"
-PERSONA_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-persona.md"
-PERSONA_PRESET="$PLUGIN_DIR/personas/persona.md"
 ENV_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout.env"
 
 usage() {
   echo "Usage: $0 <stop|notification|all|greeting|farewell|overflow-pipeline|chunk-marker> <on|off>" >&2
   echo "       $0 mode <summary|full>" >&2
   echo "       $0 speed <0.5-2.0>" >&2
-  echo "       $0 persona <on|off>" >&2
   echo "       $0 backend <ondevice|gemini|inworld|elevenlabs>" >&2
   echo "       $0 backend-<notification|summary|full|file> <ondevice|gemini|inworld|elevenlabs>" >&2
   echo "       $0 tune <KEY> <VALUE>" >&2
@@ -234,17 +227,6 @@ case "$TARGET" in
       echo "speed out of range (0.5-2.0): $STATE" >&2; exit 1
     fi
     set_key READOUT_SPEED "$STATE"
-    ;;
-  persona)
-    case "$STATE" in on|off) ;; *) usage ;; esac
-    if [ "$STATE" = on ]; then
-      [ -f "$PERSONA_PRESET" ] || { echo "persona preset not found: $PERSONA_PRESET" >&2; exit 1; }
-      cp "$PERSONA_PRESET" "$PERSONA_FILE"
-    else
-      rm -f "$PERSONA_FILE"
-    fi
-    echo "voice-readout: persona -> ${STATE}"
-    exit 0
     ;;
   backend|backend-notification|backend-summary|backend-full|backend-file)
     case "$STATE" in ondevice|gemini|inworld|elevenlabs) ;; *) usage ;; esac

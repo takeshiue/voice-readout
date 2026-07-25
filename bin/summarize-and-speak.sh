@@ -85,11 +85,35 @@ summarizer_refused() {
   return 1
 }
 
-# Summary-prompt components live here (above the full-mode block) because the
-# experimental overflow pipeline inside that block also summarizes and needs
-# them; the normal summarizer path further down uses the same two constants.
-BASE_PROMPT_PREFIX='以下はあなた自身がたった今チャットで送った応答です。その内容を、送った本人として相手に直接話しかける一文に要約してください。短く、自然な話し言葉にしてください。「〜とのことです」「〜ということですね」のような伝聞・第三者的な言い回しや、堅い敬語は使わないでください。'
-BASE_PROMPT_SUFFIX='コード・記号・URL・ファイルパスは含めないでください。要約文だけを出力し、前置きや説明は付けないでください。'
+# The summarizer prompt. Defined here (above the full-mode block) because the
+# experimental overflow pipeline inside that block summarizes too.
+#
+# First-person framing matters: summarizing "the assistant's response" from the
+# outside produced narrator-style readouts (「〜ということですね」) that felt like
+# a third party reporting on the conversation.
+#
+# But it must not be framed as "this is the response YOU just sent", which is
+# what it used to say. Haiku is a chat model with no such response in its
+# context, so it would sometimes disagree with the premise and answer the user
+# instead —「このセッションではまだ応答を送っていないので…」— and that reply got
+# read aloud as the summary. Point at delimited text and ask for a summary of
+# it: a claim about the text can't be contradicted by an empty history. The
+# last sentence closes the same door explicitly.
+SUMMARY_PROMPT='次の <text> と </text> に挟まれたテキストを、一文の日本語に要約してください。そのテキストを書いた本人が相手に直接話しかける口調で、短く自然な話し言葉にしてください。「〜とのことです」「〜ということですね」のような伝聞・第三者的な言い回しや、堅い敬語は使わないでください。コード・記号・URL・ファイルパスは含めないでください。要約文だけを出力し、前置きや説明は付けないでください。テキストが短くても断片でも、その内容を要約することだけを行い、質問や説明を返さないでください。'
+
+# Feed the text to the summarizer, delimited to match the prompt above. A body
+# carrying its own </text> would end the block early and leave the rest sitting
+# outside it, where it reads as instructions rather than as material — this
+# script summarizes whatever Claude last said, including text about these very
+# tags. A probe with a closing tag and a follow-on instruction was in fact
+# summarized rather than obeyed, but that is one sample of a model whose wording
+# has varied run to run all day, so drop the bare tags instead of relying on it.
+# They carry nothing audible anyway.
+run_summarizer() {
+  local body
+  body="$(printf '%s' "$1" | sed -E 's#</?text>##g')"
+  printf '<text>\n%s\n</text>' "$body" | claude --safe-mode -p --model haiku "$SUMMARY_PROMPT" 2>/dev/null
+}
 
 if [ "$READOUT_MODE" = "full" ]; then
   # Full mode: read the cleaned text verbatim, no summarization. Requested
@@ -122,7 +146,6 @@ if [ "$READOUT_MODE" = "full" ]; then
   # the two config defaults, and the bridge string.
   if [ "$(get_tuning OVERFLOW_PIPELINE off)" = "on" ]; then
     log fallback "overflow pipeline: opening now, summarizing whole response in background"
-    PIPE_PROMPT="${BASE_PROMPT_PREFIX} $(get_persona_style) ${BASE_PROMPT_SUFFIX}"
     PIPE_TMP="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/vr-pipe-$$")"
     PIPE_DONE_TMP="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/vr-pipe-done-$$")"
     PIPE_T0="$(date +%s)"
@@ -130,7 +153,7 @@ if [ "$READOUT_MODE" = "full" ]; then
     # `date +%s` right after `wait` returns is NOT when claude actually exited
     # if it finished earlier — wait() on an already-exited child returns
     # instantly. Have the subshell stamp its own real completion time instead.
-    ( printf '%s' "$CLEANED_TRIMMED" | claude --safe-mode -p --model haiku "$PIPE_PROMPT" > "$PIPE_TMP" 2>/dev/null; date +%s > "$PIPE_DONE_TMP" ) &
+    ( run_summarizer "$CLEANED_TRIMMED" > "$PIPE_TMP"; date +%s > "$PIPE_DONE_TMP" ) &
     PIPE_PID=$!
 
     # Opening: first N chars, backed off to the last sentence/clause boundary
@@ -198,30 +221,17 @@ if [ "$READOUT_MODE" = "full" ]; then
   fi
 fi
 
-# First-person framing matters: summarizing "the assistant's response" from
-# the outside produced narrator-style readouts (「〜ということですね」) that
-# felt like a third party reporting on the conversation. That part is a
-# permanent baseline. The playful tone on top of it (see personas/) is
-# optional and lives outside this script — read PERSONA_FILE via tts-lib.sh.
-# Tone note: pushing a persona's framing too far (e.g. 恋人に囁く…) can make
-# Haiku refuse, and the refusal text itself would get read aloud — see the
-# fallback check below. BASE_PROMPT_PREFIX / BASE_PROMPT_SUFFIX are defined
-# above the full-mode block (the overflow pipeline needs them too).
-PERSONA_STYLE="$(get_persona_style)"
-SUMMARY_PROMPT="${BASE_PROMPT_PREFIX} ${PERSONA_STYLE} ${BASE_PROMPT_SUFFIX}"
-
 if [ "${#CLEANED_TRIMMED}" -lt "$SUMMARY_MIN_CHARS" ]; then
   # Too short to summarize (see SUMMARY_MIN_CHARS above) — read it as it is.
   log skip "only ${#CLEANED_TRIMMED} chars left, reading as-is instead of summarizing"
   SUMMARY="$CLEANED_TRIMMED"
 else
-  SUMMARY="$(printf '%s' "$CLEANED_TRIMMED" | claude --safe-mode -p --model haiku "$SUMMARY_PROMPT" 2>/dev/null)"
+  SUMMARY="$(run_summarizer "$CLEANED_TRIMMED")"
 
-  # If the summarizer refused the style instruction, reading the refusal aloud
-  # is worse than a plain readout — fall back to the cleaned text instead.
-  # Match only refusal-specific phrasing: the sweet tone itself legitimately
-  # produces 「申し訳ないのよ」 in apology summaries, so plain 申し訳/できません
-  # would throw those away too.
+  # If the summarizer refused, reading the refusal aloud is worse than a plain
+  # readout — fall back to the cleaned text instead. Match only refusal-specific
+  # phrasing: a summary of an apology legitimately contains 申し訳/できません, so
+  # matching those bare would throw away good summaries too.
   if summarizer_refused "$SUMMARY"; then
     log fallback "summarizer refused or had nothing to summarize, using cleaned text"
     SUMMARY=""

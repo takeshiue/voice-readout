@@ -137,19 +137,6 @@ get_readout_mode() {
   case "$val" in full) echo full ;; *) echo summary ;; esac
 }
 
-# Tone lives outside the scripts: an empty/missing persona file means plain,
-# short, neutral phrasing. A non-empty file's contents are appended to the
-# Haiku prompt as extra style instructions, and its presence also switches
-# notify-speak.sh's static phrases to a matching preset (only "sweet" exists
-# today; extend PERSONA_FILE contents + notify-speak.sh together for more).
-PERSONA_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-persona.md"
-persona_active() {
-  [ -s "$PERSONA_FILE" ]
-}
-get_persona_style() {
-  persona_active && cat "$PERSONA_FILE" || true
-}
-
 # Which engine speak() uses: "ondevice" (Android's on-device TTS, reached via
 # Termux:API — this is the delivery pipe's name, not the voice itself; the
 # voice is whichever Android TTS engine is set as default, currently Google's),
@@ -346,7 +333,7 @@ ondevice_max_chars() {
 # Spoken as a short preface when an over-length readout is degraded to a summary
 # (see the on-device ceiling in speak()). Lets a listener who asked for the full
 # text or a file know they are hearing a summary instead of the whole thing.
-# Deliberately a fixed Japanese system message (no persona, no per-language
+# Deliberately a fixed Japanese system message (no per-language
 # variants): Japanese is the most compact — the same wording in English runs
 # nearly twice the character count against the on-device ceiling — and the
 # summary that follows is always Japanese too, so the two stay consistent.
