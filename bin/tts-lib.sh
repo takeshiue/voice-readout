@@ -577,8 +577,11 @@ play_notice_clip() {
   command -v termux-media-player >/dev/null 2>&1 || return 1
   local termux_home="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}"
   local scratch_dir="$termux_home/.voice-readout-tmp"
-  mkdir -p "$scratch_dir" 2>/dev/null || return 1
+  [ -d "$scratch_dir" ] || { mkdir -p "$scratch_dir" 2>/dev/null && chmod 700 "$scratch_dir" 2>/dev/null; } || return 1
   local dest="$scratch_dir/$(basename "$clip")"
+  # Same guard as gen_cloud: a fixed name in a shared directory, so clear
+  # whatever is at it before copying rather than following a link.
+  rm -f "$dest" 2>/dev/null
   cp "$clip" "$dest" 2>/dev/null || return 1
   if ! termux-media-player play "$dest" >/dev/null 2>&1; then
     rm -f "$dest"
@@ -885,7 +888,7 @@ speak_gemini() {
   # $TERMUX_HOME (and /storage/emulated/0) are — see `mount` output.
   local termux_home="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}"
   local scratch_dir="$termux_home/.voice-readout-tmp"
-  mkdir -p "$scratch_dir" 2>/dev/null
+  [ -d "$scratch_dir" ] || { mkdir -p "$scratch_dir" 2>/dev/null && chmod 700 "$scratch_dir" 2>/dev/null; }
   if [ ! -d "$scratch_dir" ]; then
     log error "gemini backend: cannot create $scratch_dir (wrong TERMUX_HOME?)"
     return 1
@@ -980,7 +983,7 @@ speak_inworld() {
   # comment there for why the file must live under $TERMUX_HOME.
   local termux_home="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}"
   local scratch_dir="$termux_home/.voice-readout-tmp"
-  mkdir -p "$scratch_dir" 2>/dev/null
+  [ -d "$scratch_dir" ] || { mkdir -p "$scratch_dir" 2>/dev/null && chmod 700 "$scratch_dir" 2>/dev/null; }
   if [ ! -d "$scratch_dir" ]; then
     log error "inworld backend: cannot create $scratch_dir (wrong TERMUX_HOME?)"
     return 1
@@ -1053,7 +1056,7 @@ speak_elevenlabs() {
 
   local termux_home="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}"
   local scratch_dir="$termux_home/.voice-readout-tmp"
-  mkdir -p "$scratch_dir" 2>/dev/null
+  [ -d "$scratch_dir" ] || { mkdir -p "$scratch_dir" 2>/dev/null && chmod 700 "$scratch_dir" 2>/dev/null; }
   if [ ! -d "$scratch_dir" ]; then
     log error "elevenlabs backend: cannot create $scratch_dir (wrong TERMUX_HOME?)"
     return 1
@@ -1196,7 +1199,12 @@ STOP_SWITCH_FILE="/data/data/com.termux/files/home/.voice-readout-stopped"
 # the path; non-zero if it can't be created.
 _cloud_scratch_dir() {
   local d="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}/.voice-readout-tmp"
-  mkdir -p "$d" 2>/dev/null
+  if [ ! -d "$d" ]; then
+    # 0700 on creation: what lands here is the audio of whatever is being read
+    # aloud. Termux and this proot share a uid, so the media player can still
+    # open it (verified 2026-07-25 — real uid 10502 on both sides).
+    mkdir -p "$d" 2>/dev/null && chmod 700 "$d" 2>/dev/null
+  fi
   [ -d "$d" ] || { log error "cloud backend: cannot create $d (wrong TERMUX_HOME?)"; return 1; }
   printf '%s' "$d"
 }
@@ -1374,6 +1382,14 @@ _append_chunk_marker() {
 gen_cloud() {
   local backend="$1" text="$2" uid="$3" out
   out="$(_cloud_audio_path "$backend" "$uid")" || return 1
+  # These names have to be predictable — the backgrounded generator and the
+  # foreground player agree on them without a pipe — so the write is guarded
+  # instead of the name being made unguessable. rm -f takes away a symlink
+  # planted at the path rather than writing through it, and clears a stale file
+  # left by a readout that died before its own cleanup. The two extra names are
+  # the intermediates the backends build beside the output (gemini's .pcm,
+  # elevenlabs' -raw.mp3).
+  rm -f "$out" "${out%.wav}.pcm" "${out%.mp3}-raw.mp3" 2>/dev/null
   case "$backend" in
     gemini)     gen_gemini "$text" "$out" ;;
     inworld)    gen_inworld "$text" "$out" ;;

@@ -158,10 +158,18 @@ if [ "$READOUT_MODE" = "full" ]; then
   # summary skip the preflight probe. Self-contained + toggle-guarded so the
   # whole feature is trivially revertible: delete this block, the toggle verb,
   # the two config defaults, and the bridge string.
-  if [ "$(get_tuning OVERFLOW_PIPELINE off)" = "on" ]; then
+  # The mktemp calls are part of the condition on purpose. They used to fall
+  # back to a fixed "${TMPDIR:-/tmp}/vr-pipe-$$" when mktemp failed — a name
+  # anyone can predict, in a directory anyone can write to, holding the summary
+  # of the response on its way to being spoken. mktemp creates exclusively and
+  # fails rather than reusing something already there, which is the whole point
+  # of it; a fallback that throws that away is worse than not running the
+  # experimental pipeline at all. So if it fails, skip the block and let the
+  # ordinary summary path below do the work.
+  if [ "$(get_tuning OVERFLOW_PIPELINE off)" = "on" ] \
+     && PIPE_TMP="$(mktemp "${PLUGIN_DATA_DIR}/vr-pipe.XXXXXX" 2>/dev/null)" \
+     && PIPE_DONE_TMP="$(mktemp "${PLUGIN_DATA_DIR}/vr-pipe-done.XXXXXX" 2>/dev/null)"; then
     log fallback "overflow pipeline: opening now, summarizing whole response in background"
-    PIPE_TMP="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/vr-pipe-$$")"
-    PIPE_DONE_TMP="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/vr-pipe-done-$$")"
     PIPE_T0="$(date +%s)"
     # `wait` below only runs after the opening+bridge audio finishes, so
     # `date +%s` right after `wait` returns is NOT when claude actually exited
