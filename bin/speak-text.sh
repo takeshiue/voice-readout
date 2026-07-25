@@ -37,10 +37,13 @@ cap=$(( 30 + bytes / 3 ))
 [ "$cap" -gt 900 ] && cap=900
 
 log manual "speak-text.sh (${#TEXT} chars) from ${SRC}"
-# Same protection as the Stop hook: a manual readout is just as easy for an
-# idle notice to cut off, and just as unrecoverable when it happens.
-readout_speaking_begin
+# Same handling as the Stop hook: queue behind any readout already speaking,
+# and hold the marker so an idle notice cannot cut this one off either.
 trap readout_speaking_end EXIT
+if ! readout_speaking_begin; then
+  log skip "読み上げ停止中 (stop switch pressed while queued)"
+  exit 0
+fi
 speak "$TEXT" "$cap" file
 rc=$?
 

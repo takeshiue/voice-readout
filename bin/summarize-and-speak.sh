@@ -27,14 +27,19 @@ if [ -z "$LAST_MSG" ]; then
   exit 0
 fi
 
-# From here on this hook is committed to speaking, so claim the marker that
-# stops the Notification hook from cutting the readout off with its idle notice
-# (see SPEAKING_MARKER_FILE in tts-lib.sh). Claimed before the summarizer call
-# rather than immediately before speak(): the marker covers a few seconds of
-# silence that way, but every path below — full, summary, the overflow pipeline
-# — is covered by construction, and one trap releases it however we exit.
-readout_speaking_begin
+# From here on this hook is committed to speaking. Take our place in the
+# readout queue (blocks until any earlier readout has finished) and claim the
+# marker that stops the Notification hook from cutting us off with its idle
+# notice — see readout_speaking_begin in tts-lib.sh. The trap goes first so the
+# ticket and marker are released however we exit, including while still queued.
+# Claimed before the summarizer call rather than immediately before speak():
+# the marker covers a few seconds of silence that way, but every path below —
+# full, summary, the overflow pipeline — is then covered by construction.
 trap readout_speaking_end EXIT
+if ! readout_speaking_begin; then
+  log skip "読み上げ停止中 (stop switch pressed while queued)"
+  exit 0
+fi
 
 # Rule-based cleanup: strip fenced code blocks, inline code, markdown links
 # (keep the link text), raw URLs, then markup syntax that reads badly aloud

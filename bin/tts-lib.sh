@@ -344,49 +344,98 @@ VOICE_READOUT_RUN_ID="${VOICE_READOUT_RUN_ID:-$$}"
 # must never mute notifications permanently.
 SPEAKING_MARKER_MAX=900
 
-# Claiming the marker also supersedes whatever readout held it. A response that
-# is still being read when the next one arrives is stale — the user has already
-# moved on — and letting the two run concurrently is worse than stale: they
-# share one media player, so they cut each other off mid-chunk (observed
-# 2026-07-25: a 725-char readout and a 357-char readout overlapped for 63s and
-# the listener heard the two responses interleaved out of order).
-# Stopping the player here silences the old readout at once; the old readout
-# itself notices the lost marker at its next chunk boundary (readout_superseded)
-# and drops the rest. Nothing is killed, so its generators unwind normally.
-readout_speaking_begin() {
-  if readout_is_speaking; then
-    local prev
-    prev="$(cat "$SPEAKING_MARKER_FILE" 2>/dev/null || true)"
-    prev="${prev%%:*}"
-    if [ -n "$prev" ] && [ "$prev" != "$$" ]; then
-      log info "superseding readout ${prev}: a newer response arrived"
-      command -v termux-media-player >/dev/null 2>&1 && termux-media-player stop >/dev/null 2>&1
-    fi
-  fi
-  printf '%s:%s' "$$" "$(( $(date +%s) + SPEAKING_MARKER_MAX ))" \
-    > "$SPEAKING_MARKER_FILE" 2>/dev/null || true
+# Readouts queue; they do not interrupt each other. Only one can be audible
+# anyway — termux-media-player is a single global player — so when a response
+# arrives while an earlier one is still being read, something has to give.
+# This waits: the earlier readout finishes, then the later one starts.
+#
+# The alternative, dropping the earlier readout in favour of the newer one, was
+# implemented first and was wrong. It assumed that interrupting means the user
+# is done listening, which is a guess about intent. This is a readout, not a
+# conversation: reading things in the order they were produced is the behaviour
+# a listener can actually follow, and one that reads in order is self-evidently
+# still working through the backlog. Nothing has to be inferred.
+#
+# The queue is a directory of one file per waiting readout, named
+# "<nanoseconds>.<pid>" so a plain sort is arrival order and no lock is needed
+# to join. A readout speaks once it is at the head and nobody holds the
+# speaking marker.
+READOUT_QUEUE_DIR="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-queue"
+# Longest a queued readout waits for its turn before going ahead regardless.
+# Only reachable if a predecessor wedges in a way the liveness checks miss;
+# speaking late beats never speaking.
+READOUT_QUEUE_MAX_WAIT=900
+READOUT_QUEUE_TICKET=""
+
+# Drops tickets whose process is gone, so one crashed readout cannot stall
+# every readout behind it.
+_readout_queue_prune() {
+  local t pid
+  for t in "$READOUT_QUEUE_DIR"/*.*; do
+    [ -e "$t" ] || continue
+    pid="${t##*.}"
+    case "$pid" in ''|*[!0-9]*) rm -f "$t" 2>/dev/null; continue ;; esac
+    kill -0 "$pid" 2>/dev/null || rm -f "$t" 2>/dev/null
+  done
 }
 
-# True once another readout has taken the marker from us. Checked at chunk
-# boundaries, exactly where the stop switch is checked, so a superseded readout
-# stops within one chunk instead of talking over its successor.
-# No marker at all means nobody is managing readouts (speak() called directly),
-# which is not the same as having been superseded — say no.
-readout_superseded() {
-  local rec
-  rec="$(cat "$SPEAKING_MARKER_FILE" 2>/dev/null || true)"
-  [ -n "$rec" ] || return 1
-  [ "${rec%%:*}" = "$$" ] && return 1
+_readout_queue_head() {
+  _readout_queue_prune
+  local t
+  for t in "$READOUT_QUEUE_DIR"/*.*; do
+    [ -e "$t" ] || continue
+    printf '%s' "$t"
+    return 0
+  done
+  return 1
+}
+
+# Take a ticket, wait for our turn, then claim the speaking marker.
+readout_speaking_begin() {
+  mkdir -p "$READOUT_QUEUE_DIR" 2>/dev/null
+  # Nanosecond precision plus the pid: two readouts cannot collide, and the
+  # name sorts by arrival, which is the whole ordering mechanism.
+  READOUT_QUEUE_TICKET="$READOUT_QUEUE_DIR/$(date +%s%N).$$"
+  : > "$READOUT_QUEUE_TICKET" 2>/dev/null
+
+  local waited=0 announced=""
+  while [ "$waited" -lt "$READOUT_QUEUE_MAX_WAIT" ]; do
+    # A queued readout is as droppable as a speaking one: someone reaching for
+    # 停止 wants silence, not silence followed by the backlog.
+    if [ -e "$STOP_SWITCH_FILE" ]; then
+      readout_queue_leave
+      return 1
+    fi
+    if [ "$(_readout_queue_head)" = "$READOUT_QUEUE_TICKET" ] && ! readout_is_speaking; then
+      break
+    fi
+    [ -z "$announced" ] && { log info "queued behind an in-progress readout"; announced=1; }
+    sleep 1
+    waited=$(( waited + 1 ))
+  done
+  [ "$waited" -ge "$READOUT_QUEUE_MAX_WAIT" ] && log fallback "queue wait exceeded ${READOUT_QUEUE_MAX_WAIT}s, speaking anyway"
+  [ -n "$announced" ] && log info "queue: our turn after ${waited}s"
+
+  printf '%s:%s' "$$" "$(( $(date +%s) + SPEAKING_MARKER_MAX ))" \
+    > "$SPEAKING_MARKER_FILE" 2>/dev/null || true
+  return 0
+}
+
+readout_queue_leave() {
+  [ -n "$READOUT_QUEUE_TICKET" ] && rm -f "$READOUT_QUEUE_TICKET" 2>/dev/null
+  READOUT_QUEUE_TICKET=""
   return 0
 }
 
 # Clears only our own marker. A readout that overran its deadline may already
-# have been superseded, and removing the newer readout's marker would re-open
-# the very gap this is here to close.
+# have been replaced, and removing the newer readout's marker would re-open the
+# very gap this is here to close. Always give up our queue ticket too, so the
+# readout behind us starts immediately.
 readout_speaking_end() {
   local rec
   rec="$(cat "$SPEAKING_MARKER_FILE" 2>/dev/null || true)"
   [ "${rec%%:*}" = "$$" ] && rm -f "$SPEAKING_MARKER_FILE" 2>/dev/null
+  readout_queue_leave
   return 0
 }
 
@@ -1322,15 +1371,8 @@ speak_cloud_chunked() {
     # Stop switch re-checked at every boundary, like the ondevice loop, so a
     # mid-readout 停止 drops the remaining chunks instead of playing on. Reap the
     # still-running generators first so they don't leak past the readout.
-    # Superseded is handled identically to 停止: in both cases the rest of this
-    # readout is unwanted, and the only correct thing is to reap the generators
-    # so they don't leak, bin their audio, and stop talking.
-    if [ -e "$STOP_SWITCH_FILE" ] || readout_superseded; then
-      if [ -e "$STOP_SWITCH_FILE" ]; then
-        log skip "読み上げ停止中 (stop switch, ${i}/${n} chunks spoken)"
-      else
-        log skip "superseded by a newer readout (${i}/${n} chunks spoken)"
-      fi
+    if [ -e "$STOP_SWITCH_FILE" ]; then
+      log skip "読み上げ停止中 (stop switch, ${i}/${n} chunks spoken)"
       local p
       for (( p = i; p < n; p++ )); do
         [ -n "${gen_pid[$p]:-}" ] && wait "${gen_pid[$p]}" 2>/dev/null
@@ -1559,12 +1601,8 @@ speak() {
           # end — minutes, with retries. Here it takes effect within one
           # chunk and the remaining chunks are dropped, which is what someone
           # reaching for a stop button actually wants.
-          if [ -e "$STOP_SWITCH_FILE" ] || readout_superseded; then
-            if [ -e "$STOP_SWITCH_FILE" ]; then
-              log skip "読み上げ停止中 (stop switch pressed mid-readout, ${chunk_count}/${total_chunks} spoken)"
-            else
-              log skip "superseded by a newer readout (${chunk_count}/${total_chunks} spoken)"
-            fi
+          if [ -e "$STOP_SWITCH_FILE" ]; then
+            log skip "読み上げ停止中 (stop switch pressed mid-readout, ${chunk_count}/${total_chunks} spoken)"
             rm -f "$ONDEVICE_LOCK_FILE" 2>/dev/null
             command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock 2>/dev/null
             return 0
