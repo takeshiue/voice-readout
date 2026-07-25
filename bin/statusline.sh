@@ -61,6 +61,34 @@ case "${1:-}" in
 
     SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
+    # Does an existing registration belong to this plugin? Both commands ask,
+    # and getting it wrong in either direction is bad: claim someone else's
+    # statusLine and they lose it, disown one of ours and neither --install nor
+    # --uninstall can touch the entry again.
+    #
+    # A path carrying the plugin name is the ordinary case. The second form is
+    # "${CLAUDE_PLUGIN_ROOT}/bin/statusline.sh", written by hand: it is the
+    # natural guess, since every hook in this plugin is registered exactly that
+    # way — and it is broken by construction. statusLine is not a plugin
+    # component, so nothing expands the variable and Claude Code runs
+    # "/bin/statusline.sh", which fails with no status line, no error and no
+    # clue. Left unrecognised it was also the one registration neither command
+    # could repair, having no "voice-readout" in it to match on. Seen live on
+    # 2026-07-25.
+    #
+    # The variable has to appear literally in the value to qualify. An expanded
+    # absolute path that merely ends in statusline.sh is NOT claimed: the name
+    # is a generic one that plenty of other status lines use, and a working
+    # registration pointing somewhere else is exactly what must be left alone.
+    is_ours() {
+      case "$1" in
+        *voice-readout*)                        return 0 ;;
+        *'${CLAUDE_PLUGIN_ROOT}'*statusline.sh) return 0 ;;
+        *'$CLAUDE_PLUGIN_ROOT'*statusline.sh)   return 0 ;;
+      esac
+      return 1
+    }
+
     if ! command -v jq >/dev/null 2>&1; then
       echo "jq が無いので settings.json を編集できません。次の行を手で追加してください:" >&2
       echo "  \"statusLine\": { \"type\": \"command\", \"command\": \"$SELF\" }" >&2
@@ -77,29 +105,34 @@ case "${1:-}" in
     CURRENT="$(jq -r '.statusLine.command // ""' "$SETTINGS")"
 
     if [ "$ACTION" = "--uninstall" ]; then
-      case "$CURRENT" in
-        *voice-readout*)
-          cp "$SETTINGS" "${SETTINGS}.bak-voice-readout" 2>/dev/null
-          jq 'del(.statusLine)' "$SETTINGS" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "$SETTINGS"
-          echo "✓ statusLine の登録を外しました: $SETTINGS"
-          ;;
-        "") echo "- statusLine は登録されていません: $SETTINGS" ;;
-        *)  echo "- statusLine は別のスクリプトを指しているので触りません: $CURRENT" ;;
-      esac
+      if [ -z "$CURRENT" ]; then
+        echo "- statusLine は登録されていません: $SETTINGS"
+      elif is_ours "$CURRENT"; then
+        cp "$SETTINGS" "${SETTINGS}.bak-voice-readout" 2>/dev/null
+        jq 'del(.statusLine)' "$SETTINGS" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "$SETTINGS"
+        echo "✓ statusLine の登録を外しました: $SETTINGS"
+      else
+        echo "- statusLine は別のスクリプトを指しているので触りません: $CURRENT"
+      fi
       exit 0
     fi
 
     # --install. An existing registration for something else is the user's own
     # choice and is not silently replaced.
+    if [ -n "$CURRENT" ] && ! is_ours "$CURRENT" && [ "$FORCE" -ne 1 ]; then
+      echo "既に別の statusLine が登録されています:" >&2
+      echo "  $CURRENT" >&2
+      echo "置き換えるなら --force を付けて再実行してください。" >&2
+      exit 1
+    fi
+
+    # Repointing a broken variable form at a real path is a repair, not a
+    # re-registration, and it is worth saying so: the symptom was an empty
+    # status line, so "登録しました" alone would read as having changed nothing.
     case "$CURRENT" in
-      ""|*voice-readout*) ;;
-      *)
-        if [ "$FORCE" -ne 1 ]; then
-          echo "既に別の statusLine が登録されています:" >&2
-          echo "  $CURRENT" >&2
-          echo "置き換えるなら --force を付けて再実行してください。" >&2
-          exit 1
-        fi
+      *CLAUDE_PLUGIN_ROOT*)
+        echo "- 展開されない \${CLAUDE_PLUGIN_ROOT} を含む登録が入っていました。"
+        echo "  statusLine ではこの変数は展開されないため、絶対パスに置き換えます。"
         ;;
     esac
 

@@ -107,10 +107,21 @@ fi
 # user, and someone who has since repointed it at a different script must not
 # lose theirs. jq rewrites the file's formatting, so a .bak is kept — these are
 # hand-edited files.
+#
+# "Points at this plugin" also covers a hand-written
+# "${CLAUDE_PLUGIN_ROOT}/bin/statusline.sh" — the shape people guess, since the
+# hooks are registered exactly that way, and one that never worked (statusLine
+# is not a plugin component, so the variable is never expanded). Matching only
+# the plugin name left that entry behind, so an uninstall took the plugin away
+# and left a dead statusLine command in settings.json. The variable must be
+# literal in the value: an expanded path that merely ends in statusline.sh can
+# belong to any other tool. Same rule as statusline.sh's own is_ours().
 strip_statusline() {
   local f="$1"
   [ -f "$f" ] || return 1
-  jq -e '(.statusLine.command // "") | test("voice-readout")' "$f" >/dev/null 2>&1 || return 1
+  jq -e '(.statusLine.command // "")
+         | test("voice-readout")
+           or test("[$]\\{?CLAUDE_PLUGIN_ROOT\\}?.*statusline[.]sh")' "$f" >/dev/null 2>&1 || return 1
   cp "$f" "${f}.bak-voice-readout" 2>/dev/null
   if jq 'del(.statusLine)' "$f" > "${f}.tmp" 2>/dev/null && [ -s "${f}.tmp" ]; then
     mv "${f}.tmp" "$f"
