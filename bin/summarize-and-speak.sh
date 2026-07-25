@@ -27,6 +27,15 @@ if [ -z "$LAST_MSG" ]; then
   exit 0
 fi
 
+# From here on this hook is committed to speaking, so claim the marker that
+# stops the Notification hook from cutting the readout off with its idle notice
+# (see SPEAKING_MARKER_FILE in tts-lib.sh). Claimed before the summarizer call
+# rather than immediately before speak(): the marker covers a few seconds of
+# silence that way, but every path below — full, summary, the overflow pipeline
+# — is covered by construction, and one trap releases it however we exit.
+readout_speaking_begin
+trap readout_speaking_end EXIT
+
 # Rule-based cleanup: strip fenced code blocks, inline code, markdown links
 # (keep the link text), raw URLs, then markup syntax that reads badly aloud
 # (bold/italic markers, headings, list bullets, blockquotes — mainly matters

@@ -322,6 +322,56 @@ ONDEVICE_LOCK_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-ondevice.lock"
 # an active conversation). Written on success below; read at the preflight gate.
 ONDEVICE_LASTSPOKE_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-ondevice-lastspoke"
 
+# Marks a response readout as in flight, as "pid:deadline_epoch" (same shape as
+# ONDEVICE_LOCK_FILE above). Exists because termux-media-player is a single
+# global player: starting a notice clip stops whatever is already playing.
+# Claude Code raises its idle Notification 60s after it begins waiting for
+# input, and that timer knows nothing about the readout — so a readout longer
+# than a minute could be cut off mid-sentence by its own idle notice, with the
+# remaining chunks lost and the readout still logging success (observed
+# 2026-07-25: a 431-char response cut at 60s, ~half of the last chunk never
+# heard). The Notification hook checks this marker and drops the idle notice
+# while a readout is speaking; the audio ending is itself the cue that it is
+# the user's turn.
+SPEAKING_MARKER_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-speaking"
+# Hard ceiling on how long the marker may silence idle notices. Belt and
+# braces with the liveness check below: a marker that outlives its process
+# must never mute notifications permanently.
+SPEAKING_MARKER_MAX=900
+
+readout_speaking_begin() {
+  printf '%s:%s' "$$" "$(( $(date +%s) + SPEAKING_MARKER_MAX ))" \
+    > "$SPEAKING_MARKER_FILE" 2>/dev/null || true
+}
+
+# Clears only our own marker. A readout that overran its deadline may already
+# have been superseded, and removing the newer readout's marker would re-open
+# the very gap this is here to close.
+readout_speaking_end() {
+  local rec
+  rec="$(cat "$SPEAKING_MARKER_FILE" 2>/dev/null || true)"
+  [ "${rec%%:*}" = "$$" ] && rm -f "$SPEAKING_MARKER_FILE" 2>/dev/null
+  return 0
+}
+
+readout_is_speaking() {
+  local rec pid deadline now
+  rec="$(cat "$SPEAKING_MARKER_FILE" 2>/dev/null || true)"
+  [ -n "$rec" ] || return 1
+  pid="${rec%%:*}"
+  deadline="${rec##*:}"
+  # Stale in three ways: unparseable, the readout process is gone, or it has
+  # run past any plausible readout length. Clear it in every case rather than
+  # letting a leftover file mute the notification hook for good.
+  case "${pid}${deadline}" in ''|*[!0-9]*) rm -f "$SPEAKING_MARKER_FILE" 2>/dev/null; return 1 ;; esac
+  now="$(date +%s)"
+  if ! kill -0 "$pid" 2>/dev/null || [ "$now" -ge "$deadline" ]; then
+    rm -f "$SPEAKING_MARKER_FILE" 2>/dev/null
+    return 1
+  fi
+  return 0
+}
+
 # Longest text the on-device engine reliably finishes — see the ceiling check
 # in speak() for how this number was arrived at. Exposed as a function so
 # callers that would rather shorten their text than be refused (the Stop

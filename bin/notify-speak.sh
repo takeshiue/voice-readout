@@ -35,6 +35,7 @@ fi
 # phrases here selected by a persona file; it had no clips, so choosing it
 # silently downgraded every notification to live TTS.
 CLIP=""
+IS_IDLE=""
 case "$MESSAGE" in
   *"permission to use "*)
     # Tool name intentionally dropped: a single pre-rendered clip can't voice
@@ -49,12 +50,27 @@ case "$MESSAGE" in
   *"waiting for your input"*|*idle*)
     PHRASE="入力を待っています"
     CLIP="$PLUGIN_ROOT_DIR/assets/notify-idle.wav"
+    IS_IDLE=1
     ;;
   *)
     PHRASE="確認が必要です"
     CLIP="$PLUGIN_ROOT_DIR/assets/notify-generic.wav"
     ;;
 esac
+
+# Drop the idle notice while a response readout is still speaking. Claude Code
+# starts its 60s idle timer when the turn ends, which is the same moment the
+# readout starts, so any readout over a minute gets interrupted by its own
+# notice — and because termux-media-player is a single global player, the
+# notice does not overlap the readout, it stops it dead (observed 2026-07-25).
+# Dropping rather than deferring is deliberate: audio that is still playing
+# already tells the listener the turn is over, so the notice carries nothing
+# the readout ending does not. Only the idle notice is dropped — permission
+# prompts fire mid-turn, when no readout is running, and must always be heard.
+if [ -n "$IS_IDLE" ] && readout_is_speaking; then
+  log skip "idle notice dropped: response readout still speaking"
+  exit 0
+fi
 
 # Backend comes from TTS_BACKEND_NOTIFICATION, defaulting to ondevice. It used
 # to be hardcoded to ondevice on the reasoning that a permission prompt wants
