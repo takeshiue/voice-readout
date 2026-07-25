@@ -48,7 +48,19 @@ NOTIF_ID="voice-readout-switch"
 HELPER="/data/data/com.termux/files/home/.voice-readout-switch.sh"
 
 install_helper() {
-  cat > "$HELPER" <<HELPER_EOF
+  # Written through a temp file and moved into place, not with `cat > $HELPER`.
+  # A redirection follows a symlink and writes to wherever it points; `mv`
+  # replaces the link itself. That matters more for this file than for any
+  # other the plugin writes, because it is the one the notification button
+  # executes — whatever ends up here runs when the user taps 停止.
+  # Mode 700 for the same reason: this uid is the only one that ever needs to
+  # read or run it. Termux and this proot share it (verified 2026-07-25: real
+  # uid 10502 on both sides, and a 0700 file written here is readable by a
+  # Termux-side binary), so tightening it does not break the button.
+  local tmp="${HELPER}.tmp.$$"
+  local old_umask; old_umask="$(umask)"
+  umask 077
+  cat > "$tmp" <<HELPER_EOF
 #!/data/data/com.termux/files/usr/bin/sh
 # Installed by voice-readout (bin/readout-switch.sh). Toggles the stop switch
 # and re-posts the notification so it always shows the current state.
@@ -67,7 +79,9 @@ else
     --button1 "再開する" --button1-action "sh \$0"
 fi
 HELPER_EOF
-  chmod +x "$HELPER" 2>/dev/null
+  chmod 700 "$tmp" 2>/dev/null
+  mv -f "$tmp" "$HELPER" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  umask "$old_umask"
 }
 
 post_notification() {
