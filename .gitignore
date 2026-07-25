@@ -17,6 +17,10 @@ voice-readout-ondevice.lock
 # context, and users installing the plugin have no use for it.
 AGENTS.md
 
+# Article/SNS artwork generated for write-ups about this plugin. Not part of
+# what gets installed, so it stays out of the repo.
+generated-images/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
