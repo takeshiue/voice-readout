@@ -3,14 +3,14 @@
 # Claude Code console, so "will the next response be spoken or not" is visible
 # at a glance. Reads the exact same config file and stop-switch path the hooks
 # use, so it can never disagree with what actually gets spoken. Looks like:
-#   voice readout|greet 🔊🔇|notif 🔊 gemini|resp 🔊 sum inworld|×1.2
-#   voice readout|greet 🔊🔊|notif 🔊 local|resp 🔊 full gemini|×1.3|🔔
+#   voice readout | greet 🔊🔇 | notif 🔊 gemini | resp 🔊 sum inworld | ×1.2
+#   voice readout | greet 🔊🔊 | notif 🔊 local | resp 🔊 full gemini | ×1.3 | 🔔
 # (×N = reading pace, 🔔 = chunk marker on)
 #
 # On a terminal too narrow for all of it, the segments wrap onto further rows
 # rather than being cut off:
-#   voice readout|greet 🔊🔊|notif 🔊 inworld
-#   resp 🔊 full inworld|×1.3|🔔
+#   voice readout | greet 🔊🔊 | notif 🔊 inworld
+#   resp 🔊 full inworld | ×1.3 | 🔔
 #
 # Wire it up in settings.json (NOT a plugin hook, so ${CLAUDE_PLUGIN_ROOT} is
 # not expanded here — use an absolute path):
@@ -69,7 +69,7 @@ emit() {
   local line="" cand s
   for s in "${SEGMENTS[@]}"; do
     [ -z "$s" ] && continue
-    if [ -z "$line" ]; then cand="$s"; else cand="$line|$s"; fi
+    if [ -z "$line" ]; then cand="$s"; else cand="$line | $s"; fi
     if [ -n "$line" ] && [ "$COLS" -gt 0 ] && [ "$(dwidth "$cand")" -gt "$COLS" ]; then
       printf '%s\n' "$line"
       line="$s"
@@ -166,11 +166,12 @@ fi
 # so they get one shared "greet" segment with no backend name: left icon is the
 # startup greeting (STARTUP_GREETING), right icon the farewell
 # (SESSION_END_GREETING).
-# Segments are divided by "|". Spaces alone did not read as boundaries — every
+# Segments are divided by " | ". Spaces alone did not read as boundaries — every
 # field is itself space-separated, so the eye cannot tell where "greet" ends and
 # "notif" begins. A plain ASCII pipe rather than a box-drawing bar: renders in
-# any terminal font, and costs one column. The pipe carries the boundary on its
-# own, so it gets no padding.
+# any terminal font, and costs one column. The pipe is padded: the unpadded form
+# was a width economy from when the row was cut off at the edge, and once the
+# segments wrap there is nothing left to buy with it — only legibility to lose.
 # Which plugin this row belongs to. Spelled in English rather than カタカナ:
 # that rule exists for text the TTS engines have to pronounce (they read
 # "voice-readout" as レッドアウト), and nothing here is ever spoken.
