@@ -334,14 +334,50 @@ ONDEVICE_LASTSPOKE_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-ondevice-last
 # while a readout is speaking; the audio ending is itself the cue that it is
 # the user's turn.
 SPEAKING_MARKER_FILE="${CLAUDE_PLUGIN_DATA:-/tmp}/voice-readout-speaking"
+# Identifies this readout in the names of its chunk audio files, so two
+# readouts can never write to each other's (see _cloud_audio_path). The pid is
+# stable across the background generator subshells, which is what makes it
+# usable as the shared key: $$ is the parent's pid inside a subshell.
+VOICE_READOUT_RUN_ID="${VOICE_READOUT_RUN_ID:-$$}"
 # Hard ceiling on how long the marker may silence idle notices. Belt and
 # braces with the liveness check below: a marker that outlives its process
 # must never mute notifications permanently.
 SPEAKING_MARKER_MAX=900
 
+# Claiming the marker also supersedes whatever readout held it. A response that
+# is still being read when the next one arrives is stale — the user has already
+# moved on — and letting the two run concurrently is worse than stale: they
+# share one media player, so they cut each other off mid-chunk (observed
+# 2026-07-25: a 725-char readout and a 357-char readout overlapped for 63s and
+# the listener heard the two responses interleaved out of order).
+# Stopping the player here silences the old readout at once; the old readout
+# itself notices the lost marker at its next chunk boundary (readout_superseded)
+# and drops the rest. Nothing is killed, so its generators unwind normally.
 readout_speaking_begin() {
+  if readout_is_speaking; then
+    local prev
+    prev="$(cat "$SPEAKING_MARKER_FILE" 2>/dev/null || true)"
+    prev="${prev%%:*}"
+    if [ -n "$prev" ] && [ "$prev" != "$$" ]; then
+      log info "superseding readout ${prev}: a newer response arrived"
+      command -v termux-media-player >/dev/null 2>&1 && termux-media-player stop >/dev/null 2>&1
+    fi
+  fi
   printf '%s:%s' "$$" "$(( $(date +%s) + SPEAKING_MARKER_MAX ))" \
     > "$SPEAKING_MARKER_FILE" 2>/dev/null || true
+}
+
+# True once another readout has taken the marker from us. Checked at chunk
+# boundaries, exactly where the stop switch is checked, so a superseded readout
+# stops within one chunk instead of talking over its successor.
+# No marker at all means nobody is managing readouts (speak() called directly),
+# which is not the same as having been superseded — say no.
+readout_superseded() {
+  local rec
+  rec="$(cat "$SPEAKING_MARKER_FILE" 2>/dev/null || true)"
+  [ -n "$rec" ] || return 1
+  [ "${rec%%:*}" = "$$" ] && return 1
+  return 0
 }
 
 # Clears only our own marker. A readout that overran its deadline may already
@@ -995,11 +1031,19 @@ _cloud_scratch_dir() {
 
 # Deterministic per-(backend,uid) audio path, so a backgrounded generator and
 # the foreground player agree on the filename without passing it over a pipe.
+# Chunk audio is named per readout as well as per chunk index. It used to be
+# the index alone (vr-0.mp3, vr-1.mp3, …), which two readouts running at the
+# same time both wrote to: the newer one overwrote chunk files the older one
+# had not played yet, so the older readout played its successor's audio under
+# its own index and the listener heard the two responses interleaved out of
+# order (observed 2026-07-25). Superseding (see readout_speaking_begin) should
+# keep readouts from overlapping in the first place; this makes a collision
+# harmless even in the window before the old readout notices.
 _cloud_audio_path() {
   local d; d="$(_cloud_scratch_dir)" || return 1
   case "$1" in
-    elevenlabs) printf '%s/vr-%s.mp3' "$d" "$2" ;;
-    *)          printf '%s/vr-%s.wav' "$d" "$2" ;;
+    elevenlabs) printf '%s/vr-%s-%s.mp3' "$d" "$VOICE_READOUT_RUN_ID" "$2" ;;
+    *)          printf '%s/vr-%s-%s.wav' "$d" "$VOICE_READOUT_RUN_ID" "$2" ;;
   esac
 }
 
@@ -1224,6 +1268,15 @@ speak_cloud_chunked() {
   # small so audio still starts quickly. Generation keeps up even so (measured
   # gen/audio <1 for every backend at these sizes, incl. Gemini once its ~6s
   # TTFB is amortised over a big enough chunk), aided by the depth-2 prefetch.
+  # Per-readout audio names mean a readout that dies before its own cleanup
+  # (killed, device asleep, crash) leaves files nobody will ever reclaim by
+  # name. Sweep anything older than an hour — far longer than any readout, so
+  # this can never touch a live one's chunks.
+  local _scratch
+  if _scratch="$(_cloud_scratch_dir)"; then
+    find "$_scratch" -maxdepth 1 -name 'vr-*' -type f -mmin +60 -delete 2>/dev/null
+  fi
+
   local chunk_max first_max play_lead chunks=() c
   chunk_max="$(get_tuning CLOUD_CHUNK_CHARS 200)"
   first_max="$(get_tuning CLOUD_FIRST_CHUNK_CHARS 80)"
@@ -1269,8 +1322,15 @@ speak_cloud_chunked() {
     # Stop switch re-checked at every boundary, like the ondevice loop, so a
     # mid-readout 停止 drops the remaining chunks instead of playing on. Reap the
     # still-running generators first so they don't leak past the readout.
-    if [ -e "$STOP_SWITCH_FILE" ]; then
-      log skip "読み上げ停止中 (stop switch, ${i}/${n} chunks spoken)"
+    # Superseded is handled identically to 停止: in both cases the rest of this
+    # readout is unwanted, and the only correct thing is to reap the generators
+    # so they don't leak, bin their audio, and stop talking.
+    if [ -e "$STOP_SWITCH_FILE" ] || readout_superseded; then
+      if [ -e "$STOP_SWITCH_FILE" ]; then
+        log skip "読み上げ停止中 (stop switch, ${i}/${n} chunks spoken)"
+      else
+        log skip "superseded by a newer readout (${i}/${n} chunks spoken)"
+      fi
       local p
       for (( p = i; p < n; p++ )); do
         [ -n "${gen_pid[$p]:-}" ] && wait "${gen_pid[$p]}" 2>/dev/null
@@ -1499,8 +1559,12 @@ speak() {
           # end — minutes, with retries. Here it takes effect within one
           # chunk and the remaining chunks are dropped, which is what someone
           # reaching for a stop button actually wants.
-          if [ -e "$STOP_SWITCH_FILE" ]; then
-            log skip "読み上げ停止中 (stop switch pressed mid-readout, ${chunk_count}/${total_chunks} spoken)"
+          if [ -e "$STOP_SWITCH_FILE" ] || readout_superseded; then
+            if [ -e "$STOP_SWITCH_FILE" ]; then
+              log skip "読み上げ停止中 (stop switch pressed mid-readout, ${chunk_count}/${total_chunks} spoken)"
+            else
+              log skip "superseded by a newer readout (${chunk_count}/${total_chunks} spoken)"
+            fi
             rm -f "$ONDEVICE_LOCK_FILE" 2>/dev/null
             command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock 2>/dev/null
             return 0
