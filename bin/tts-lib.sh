@@ -1105,7 +1105,7 @@ gen_cloud() {
 # can't read Inworld's streamed WAV header anyway). MP3 from elevenlabs needs
 # ffprobe. Prints nothing if it can't tell.
 _audio_duration() {
-  local f="$1" bytes
+  local f="$1" bytes dur
   case "$f" in
     *.wav)
       bytes="$(wc -c < "$f" 2>/dev/null)" || return
@@ -1113,7 +1113,13 @@ _audio_duration() {
       ;;
     *.mp3)
       command -v ffprobe >/dev/null 2>&1 || return
-      ffprobe -v error -show_entries format=duration -of default=nk=1:np=1 "$f" 2>/dev/null
+      # nw = noprint_wrappers, nk = nokey. `np` is NOT an abbreviation ffprobe
+      # knows: it fails the writer with "Failed to set option 'np'", exits 1 and
+      # prints nothing — which silently sent every ElevenLabs chunk down the
+      # no-lead polling branch of _play_media_file (~8s of dead air per seam).
+      dur="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$f" 2>/dev/null)" || return
+      case "$dur" in ''|*[!0-9.]*) return ;; esac
+      printf '%s' "$dur"
       ;;
   esac
 }
