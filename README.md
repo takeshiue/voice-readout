@@ -297,7 +297,7 @@ bash <プラグイン>/bin/statusline.sh --install     # 登録
 bash <プラグイン>/bin/statusline.sh --uninstall   # 解除
 ```
 
-`~/.claude/settings.json`（＝個人設定）に、スクリプト自身の絶対パスが書き込まれる。**パスを人が打つ必要はない。** 反映は次回の Claude Code 起動から。
+`~/.claude/settings.json`（＝個人設定）に、スクリプト自身の絶対パスが書き込まれる。**パスを人が打つ必要はない。** 反映に再起動は要らない（Claude Code は設定ファイルを監視していて、次にやり取りしたときの再描画から出る）。
 
 <details>
 <summary>細かい挙動</summary>

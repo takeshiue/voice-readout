@@ -203,7 +203,7 @@ EOF
       mv "${SETTINGS}.tmp" "$SETTINGS"
       echo "✓ statusLine を登録しました: $SETTINGS"
       echo "  → $SELF"
-      echo "  次に Claude Code を起動したときから表示されます。"
+      echo "  次に Claude Code と何かやり取りすると表示されます（再起動は不要）。"
     else
       rm -f "${SETTINGS}.tmp"
       echo "! 書き込みに失敗しました: $SETTINGS" >&2
