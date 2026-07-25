@@ -49,7 +49,6 @@ else
 fi
 
 TERMUX_HOME="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}"
-SETTINGS="${HOME:-}/.claude/settings.json"
 
 say() { printf '  %s\n' "$1"; }
 
@@ -98,24 +97,48 @@ if command -v pkill >/dev/null 2>&1; then
   pkill -f 'bin/recovery-watcher\.sh' 2>/dev/null && echo "✓ 復旧ウォッチャーを停止しました"
 fi
 
-# --- 2. statusLine out of the user's settings.json. -------------------------
-# Only when it points at THIS plugin: the key is the user's own, and someone
-# who has since pointed it at a different script must not lose it. jq rewrites
-# the file's formatting, so a .bak is kept — this is a hand-edited file.
-if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
-  if jq -e '(.statusLine.command // "") | test("voice-readout")' "$SETTINGS" >/dev/null 2>&1; then
-    cp "$SETTINGS" "${SETTINGS}.bak-voice-readout" 2>/dev/null
-    if jq 'del(.statusLine)' "$SETTINGS" > "${SETTINGS}.tmp" 2>/dev/null && [ -s "${SETTINGS}.tmp" ]; then
-      mv "${SETTINGS}.tmp" "$SETTINGS"
-      echo "✓ settings.json から statusLine を削除しました（元は ${SETTINGS}.bak-voice-readout）"
-    else
-      rm -f "${SETTINGS}.tmp"
-      echo "! settings.json の書き換えに失敗しました。statusLine の行を手で消してください"
-    fi
+# --- 2. statusLine out of whichever settings file carries it. ---------------
+# statusLine is not a plugin component — Claude Code has no such slot, so this
+# plugin's README asks the user to register bin/statusline.sh in settings.json
+# themselves. That means it can be in any of the settings files Claude Code
+# merges, not just the user-level one this originally checked.
+#
+# Only removed when it actually points at THIS plugin: the key belongs to the
+# user, and someone who has since repointed it at a different script must not
+# lose theirs. jq rewrites the file's formatting, so a .bak is kept — these are
+# hand-edited files.
+strip_statusline() {
+  local f="$1"
+  [ -f "$f" ] || return 1
+  jq -e '(.statusLine.command // "") | test("voice-readout")' "$f" >/dev/null 2>&1 || return 1
+  cp "$f" "${f}.bak-voice-readout" 2>/dev/null
+  if jq 'del(.statusLine)' "$f" > "${f}.tmp" 2>/dev/null && [ -s "${f}.tmp" ]; then
+    mv "${f}.tmp" "$f"
+    echo "✓ statusLine を削除しました: $f （元は ${f}.bak-voice-readout）"
   else
-    echo "- statusLine: このプラグインを指していないので触りません"
+    rm -f "${f}.tmp"
+    echo "! 書き換えに失敗しました。$f の statusLine を手で消してください"
   fi
-elif [ -f "$SETTINGS" ]; then
+  return 0
+}
+
+if command -v jq >/dev/null 2>&1; then
+  sl_found=0
+  # The user-level pair, plus the project-level pair for wherever this was run
+  # from. A project file somewhere else on disk cannot be found from here, so
+  # the miss is reported rather than passed over in silence.
+  for s in "${HOME:-}/.claude/settings.json" \
+           "${HOME:-}/.claude/settings.local.json" \
+           "$PWD/.claude/settings.json" \
+           "$PWD/.claude/settings.local.json"; do
+    strip_statusline "$s" && sl_found=1
+  done
+  if [ "$sl_found" -eq 0 ]; then
+    echo "- statusLine: このプラグインを指す登録は見つかりませんでした"
+    echo "    プロジェクト側に登録していた場合は、そのディレクトリで次を実行して探せます:"
+    echo "    grep -l voice-readout .claude/settings*.json"
+  fi
+else
   echo "! jq が無いので settings.json は触りません。statusLine の行を手で消してください"
 fi
 
