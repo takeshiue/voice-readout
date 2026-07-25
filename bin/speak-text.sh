@@ -41,7 +41,7 @@ log manual "speak-text.sh (${#TEXT} chars) from ${SRC}"
 # and hold the marker so an idle notice cannot cut this one off either.
 trap readout_speaking_end EXIT
 if ! readout_speaking_begin; then
-  log skip "読み上げ停止中 (stop switch pressed while queued)"
+  log_repeat skip "読み上げ停止中 (stop switch pressed while queued)"
   exit 0
 fi
 speak "$TEXT" "$cap" file

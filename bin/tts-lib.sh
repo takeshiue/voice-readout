@@ -111,7 +111,7 @@ LOG_FILE="${PLUGIN_DATA_DIR}/voice-readout.log"
 # growing forever. Two generations are kept (voice-readout.log and .log.1), so
 # the threshold is the size of ONE of them and the pair can reach twice it.
 LOG_MAX_BYTES="$(get_tuning_num LOG_MAX_BYTES 1048576)"
-log() {
+_log_write() {
   local size=0
   # Guarded on existence rather than relying on `2>/dev/null`: that silences
   # wc's stderr, but a failed `<` redirection is reported by the shell itself
@@ -149,6 +149,68 @@ log() {
     : > "$LOG_FILE" 2>/dev/null && chmod 600 "$LOG_FILE" 2>/dev/null
   fi
   printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" >> "$LOG_FILE" 2>/dev/null
+}
+
+# Collapsing runs of one repeated line.
+#
+# With the stop switch held down, every arriving readout logs the same refusal.
+# A real day produced 120 consecutive copies of "読み上げ停止中 (stop switch
+# pressed while queued)" — around 60% of the file, saying one thing: the switch
+# is on. That is not free. It is the history behind it that gets pushed out of
+# the rotation window.
+#
+# So log_repeat() writes the first occurrence and counts the rest, and the run
+# is closed by a single summary line the next time anything different is
+# logged. Which is why the counter lives in a file: each readout is a separate
+# process, so there is nothing in memory for the next one to find.
+#
+# Deliberately opt-in per call site rather than a blanket rule inside log().
+# Identical text does not mean a repeated event: five "[spoke] elevenlabs-tts
+# (pipelined, 3 chunks)" lines are five responses actually read aloud, and
+# collapsing those would delete real history. Only lines that mean "nothing
+# happened, same reason as last time" are passed through here.
+#
+# Two consequences worth knowing. A pending run stays uncounted in the file
+# until something else is logged, so the tail can sit still while the switch is
+# held (the first line is already there saying why, and a session start or end
+# flushes it). And two readouts logging at the same instant can each bump the
+# counter over the other, so the count is a close lower bound, not an exact
+# tally — the alternative was locking every write for a diagnostic count.
+LOG_REPEAT_STATE="${PLUGIN_DATA_DIR}/voice-readout-log-repeat"
+
+_log_flush_repeat() {
+  [ -f "$LOG_REPEAT_STATE" ] || return 0
+  local count first last tag msg
+  { read -r count; read -r first; read -r last; read -r tag; read -r msg; } \
+    < "$LOG_REPEAT_STATE" 2>/dev/null
+  rm -f "$LOG_REPEAT_STATE" 2>/dev/null
+  case "${count:-0}" in ''|*[!0-9]*|0) return 0 ;; esac
+  _log_write "${tag:-info}" "同じ行を ${count} 回省略 (${first} 〜 ${last}): ${msg}"
+}
+
+log() {
+  _log_flush_repeat
+  _log_write "$1" "$2"
+}
+
+log_repeat() {
+  local now count first last tag msg
+  now="$(date '+%Y-%m-%d %H:%M:%S')"
+  if [ -f "$LOG_REPEAT_STATE" ]; then
+    { read -r count; read -r first; read -r last; read -r tag; read -r msg; } \
+      < "$LOG_REPEAT_STATE" 2>/dev/null
+    if [ "${tag:-}" = "$1" ] && [ "${msg:-}" = "$2" ]; then
+      case "${count:-0}" in ''|*[!0-9]*) count=0 ;; esac
+      printf '%s\n%s\n%s\n%s\n%s\n' "$(( count + 1 ))" "${first:-$now}" "$now" "$1" "$2" \
+        > "$LOG_REPEAT_STATE" 2>/dev/null
+      chmod 600 "$LOG_REPEAT_STATE" 2>/dev/null
+      return 0
+    fi
+    _log_flush_repeat
+  fi
+  _log_write "$1" "$2"
+  printf '%s\n%s\n%s\n%s\n%s\n' 0 "$now" "$now" "$1" "$2" > "$LOG_REPEAT_STATE" 2>/dev/null
+  chmod 600 "$LOG_REPEAT_STATE" 2>/dev/null
 }
 
 # On/off toggles, controlled via bin/toggle.sh (invoked by asking Claude in
@@ -1618,7 +1680,7 @@ speak() {
   # redirected at it; this cannot. If the user has pressed 停止, nothing in
   # this plugin speaks, whatever else it was told to do.
   if [ -e "$STOP_SWITCH_FILE" ]; then
-    log skip "読み上げ停止中 (stop switch is on)"
+    log_repeat skip "読み上げ停止中 (stop switch is on)"
     return 0
   fi
 

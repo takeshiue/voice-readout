@@ -37,7 +37,7 @@ fi
 # full, summary, the overflow pipeline — is then covered by construction.
 trap readout_speaking_end EXIT
 if ! readout_speaking_begin; then
-  log skip "読み上げ停止中 (stop switch pressed while queued)"
+  log_repeat skip "読み上げ停止中 (stop switch pressed while queued)"
   exit 0
 fi
 
