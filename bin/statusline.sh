@@ -35,7 +35,7 @@ set -u
 # Placed first so the render path — which is called with no arguments on every
 # single frame — pays one string comparison and nothing else.
 case "${1:-}" in
-  --install|--uninstall|--repair)
+  --install|--uninstall|--repair|--nudge)
     ACTION="$1"; shift
     # Which settings file. Written to the USER's settings, never a project's:
     # the plugin is enabled globally, so its status line belongs to every
@@ -61,6 +61,52 @@ case "${1:-}" in
     done
 
     SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+    # --nudge: make the session that just registered actually show the status
+    # line, instead of only the one after it. Detached worker, spawned by the
+    # first-run branch below; never run by hand.
+    #
+    # Claude Code does watch settings.json and picks up a change without a
+    # restart — measured on 2026-07-26: repointing statusLine mid-session had
+    # the new command running two seconds later, no restart. The first-run
+    # registration nevertheless did not appear until the NEXT launch, which is
+    # a race, not a missing watcher: SessionStart hooks run while the settings
+    # have already been read into memory but before the watcher is listening,
+    # so the one write that matters lands in the gap and no change event ever
+    # fires. The session then runs to its end with in-memory settings that have
+    # no status line in them.
+    #
+    # So write it again, later, when someone is listening. The content is
+    # identical — mv gives the file a new mtime and a new inode, which is what
+    # the watcher reacts to; re-reading the file is what puts the status line
+    # in. Nothing here can be "correct" once and for all, because how long
+    # startup takes is a property of the machine (a cold marketplace unpack on
+    # a slow disk is nothing like a warm relaunch), so this does not guess a
+    # single delay: it retries on a widening ladder and the first attempt that
+    # lands after the watcher is up wins. The rest are re-reads of a file whose
+    # contents did not change — Claude Code's own idle-time work, invisible.
+    #
+    # Stops early if the registration stops being ours (an --uninstall or a
+    # hand edit during those 30 seconds is an answer, and re-asserting a path
+    # the user just removed would be exactly the behaviour --repair is careful
+    # not to have).
+    if [ "$ACTION" = "--nudge" ]; then
+      command -v jq >/dev/null 2>&1 || exit 0
+      for delay in 1 1 2 4 8 16; do
+        sleep "$delay"
+        [ -f "$SETTINGS" ] || exit 0
+        cur="$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null)" || exit 0
+        [ "$cur" = "$SELF" ] || exit 0
+        if jq --arg cmd "$SELF" '.statusLine = {type: "command", command: $cmd}' \
+             "$SETTINGS" > "${SETTINGS}.nudge" 2>/dev/null && [ -s "${SETTINGS}.nudge" ]; then
+          mv "${SETTINGS}.nudge" "$SETTINGS"
+        else
+          rm -f "${SETTINGS}.nudge"
+          exit 0
+        fi
+      done
+      exit 0
+    fi
 
     # Does an existing registration belong to this plugin? Both commands ask,
     # and getting it wrong in either direction is bad: claim someone else's
@@ -158,6 +204,12 @@ case "${1:-}" in
                "$SETTINGS" > "${SETTINGS}.tmp" 2>/dev/null && [ -s "${SETTINGS}.tmp" ]; then
             mv "${SETTINGS}.tmp" "$SETTINGS"
             rlog "first run: registered in ${SETTINGS} -> ${SELF}"
+            # Detached, because the ladder takes half a minute and a hook that
+            # sleeps is a hook that holds up the session. setsid so Claude Code
+            # tearing down the hook's process group does not take it with it,
+            # fds to /dev/null so nothing it says reaches Claude's context.
+            setsid "$SELF" --nudge --file "$SETTINGS" >/dev/null 2>&1 </dev/null &
+            disown 2>/dev/null || true
           else
             rm -f "${SETTINGS}.tmp"
             rlog "first run: could not write ${SETTINGS}"
@@ -280,7 +332,7 @@ EOF
   --help|-h)
     echo "Usage: statusline.sh [--install|--uninstall] [--file <settings.json>] [--force]"
     echo "  --repair は SessionStart フックが呼ぶ内部用。登録済みのパスが古ければ書き直します"
-    echo "  （未登録なら何もしません）。"
+    echo "  （未登録なら何もしません）。--nudge も内部用で、初回登録を今の起動に反映させます。"
     echo "  引数なしで実行すると、Claude Code の statusLine コマンドとして1行を出力します。"
     exit 0
     ;;
