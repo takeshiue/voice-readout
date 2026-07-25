@@ -3,9 +3,14 @@
 # Claude Code console, so "will the next response be spoken or not" is visible
 # at a glance. Reads the exact same config file and stop-switch path the hooks
 # use, so it can never disagree with what actually gets spoken. Looks like:
-#   greet 🔊🔇 | notif 🔊 gemini | resp 🔊 sum inworld | ×1.2
-#   greet 🔊🔊 | notif 🔊 local | resp 🔊 full gemini | ×1.3 | 🔔
+#   greet 🔊🔇|notif 🔊 gemini|resp 🔊 sum inworld|×1.2
+#   greet 🔊🔊|notif 🔊 local|resp 🔊 full gemini|×1.3|🔔
 # (×N = reading pace, 🔔 = chunk marker on)
+#
+# On a terminal too narrow for all of it, the segments wrap onto further rows
+# rather than being cut off:
+#   greet 🔊🔊|notif 🔊 inworld
+#   resp 🔊 full inworld|×1.3|🔔
 #
 # Wire it up in settings.json (NOT a plugin hook, so ${CLAUDE_PLUGIN_ROOT} is
 # not expanded here — use an absolute path):
@@ -15,6 +20,61 @@
 # The command runs on every render, so keep it to cheap file reads only.
 
 set -u
+
+# ${#s} must count characters, not bytes, for the width arithmetic below.
+export LC_ALL=C.utf8
+
+# How wide the row actually is. Claude Code captures this script's output rather
+# than attaching it to the terminal, so tput and every language-level width
+# probe report the fallback 80 — it exports COLUMNS instead (v2.1.153+). Older
+# versions export nothing, and no information means no wrapping: one long line,
+# exactly what this script did before.
+# Two columns are held back for the interface's own spacing around the row.
+COLS=0
+case "${COLUMNS:-}" in
+  ''|*[!0-9]*) ;;
+  *) COLS=$(( COLUMNS - 2 )) ;;
+esac
+
+# Display width in terminal columns. Every emoji this script prints is a single
+# code point that occupies two columns, so the character count plus one per
+# emoji is exact — no need for a wcwidth table or an external process, and this
+# runs on every render.
+# The declaration is split deliberately: written as `local s="$1" w=${#s}`, the
+# ${#s} is expanded before s is local, so it measures the CALLER's s — emit()'s
+# loop variable — and every width came out short enough that nothing ever
+# wrapped.
+dwidth() {
+  local s="$1"
+  local w=${#s} t e
+  for e in 🔊 🔇 🔔 🛑; do
+    t="${s//$e/}"
+    w=$(( w + ${#s} - ${#t} ))
+  done
+  printf '%s' "$w"
+}
+
+# Collect segments, then emit them packed into rows that fit COLS. Wrapping to a
+# second row rather than trimming content: the terminal is a phone, its width
+# varies with the handset, the font size and the orientation, so any fixed
+# budget is wrong for somebody. Truncation also fails silently in the worst way
+# — the ellipsis lands mid-value, so the number you wanted is the part you lose.
+SEGMENTS=()
+seg() { SEGMENTS+=("$1"); }
+emit() {
+  local line="" cand s
+  for s in "${SEGMENTS[@]}"; do
+    [ -z "$s" ] && continue
+    if [ -z "$line" ]; then cand="$s"; else cand="$line|$s"; fi
+    if [ -n "$line" ] && [ "$COLS" -gt 0 ] && [ "$(dwidth "$cand")" -gt "$COLS" ]; then
+      printf '%s\n' "$line"
+      line="$s"
+    else
+      line="$cand"
+    fi
+  done
+  [ -n "$line" ] && printf '%s' "$line"
+}
 
 # Read the SAME config the hooks read. Hooks run with CLAUDE_PLUGIN_DATA set by
 # Claude Code, but a statusLine command does NOT get that variable — so falling
@@ -98,14 +158,17 @@ fi
 # so they get one shared "greet" segment with no backend name: left icon is the
 # startup greeting (STARTUP_GREETING), right icon the farewell
 # (SESSION_END_GREETING).
-# One line, segments divided by " | ". Spaces alone did not read as boundaries —
-# every field is itself space-separated, so the eye cannot tell where "greet"
-# ends and "notif" begins. A plain ASCII pipe rather than a box-drawing bar:
-# renders in any terminal font, and costs one column.
-printf 'greet %s%s | notif %s %s | resp %s %s%s' \
-  "$(icon "$(cfg STARTUP_GREETING)")" "$(icon "$(cfg SESSION_END_GREETING)")" \
-  "$(icon "$(cfg NOTIFICATION_READOUT)")" "$(short_backend "$notif_backend")" \
-  "$(icon "$(cfg STOP_READOUT)")" "$resp_mode" "$(short_backend "$resp_backend")"
+# Segments are divided by "|". Spaces alone did not read as boundaries — every
+# field is itself space-separated, so the eye cannot tell where "greet" ends and
+# "notif" begins. A plain ASCII pipe rather than a box-drawing bar: renders in
+# any terminal font, and costs one column. The pipe carries the boundary on its
+# own, so it gets no padding.
+seg "$(printf 'greet %s%s' \
+  "$(icon "$(cfg STARTUP_GREETING)")" "$(icon "$(cfg SESSION_END_GREETING)")")"
+seg "$(printf 'notif %s %s' \
+  "$(icon "$(cfg NOTIFICATION_READOUT)")" "$(short_backend "$notif_backend")")"
+seg "$(printf 'resp %s %s%s' \
+  "$(icon "$(cfg STOP_READOUT)")" "$resp_mode" "$(short_backend "$resp_backend")")"
 
 # Chunk marker: shown ONLY while it is on. It is off almost always, so a
 # permanent segment would spend width on "off" every session — and the one
@@ -122,8 +185,10 @@ printf 'greet %s%s | notif %s %s | resp %s %s%s' \
 # label cost six columns off the right edge of a phone terminal, which is where
 # this segment sits — so the number itself was what got cut.
 speed="$(cfg READOUT_SPEED)"; [ -n "$speed" ] || speed="1.2"
-printf ' | ×%s' "$speed"
+seg "×$speed"
 
-[ "$(cfg CHUNK_MARKER)" = "on" ] && printf ' | 🔔'
+[ "$(cfg CHUNK_MARKER)" = "on" ] && seg '🔔'
+
+emit
 
 exit 0
