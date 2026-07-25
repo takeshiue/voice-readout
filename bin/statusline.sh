@@ -3,8 +3,9 @@
 # Claude Code console, so "will the next response be spoken or not" is visible
 # at a glance. Reads the exact same config file and stop-switch path the hooks
 # use, so it can never disagree with what actually gets spoken. Looks like:
-#   greet 🔊🔇 | notif 🔊 gemini | resp 🔊 sum inworld
-#   greet 🔊🔊 | notif 🔊 local | resp 🔊 full gemini | 🔔   (🔔 = chunk marker on)
+#   greet 🔊🔇 | notif 🔊 gemini | resp 🔊 sum inworld | ×1.2
+#   greet 🔊🔊 | notif 🔊 local | resp 🔊 full gemini | ×1.3 | 🔔
+# (×N = reading pace, 🔔 = chunk marker on)
 #
 # Wire it up in settings.json (NOT a plugin hook, so ${CLAUDE_PLUGIN_ROOT} is
 # not expanded here — use an absolute path):
@@ -116,8 +117,12 @@ printf 'greet %s%s | notif %s %s | resp %s %s%s' \
 # "is it me or is this fast today" is exactly the question the line should
 # answer without asking. 1.0 is roughly an announcer's pace; see resolve_speed()
 # in tts-lib.sh for how each engine's own knob is derived from it.
+# The "speed" label is dropped for the same reason the bell carries no "mark":
+# × is a multiplier sign, and nothing else on this line is a multiplier. The
+# label cost six columns off the right edge of a phone terminal, which is where
+# this segment sits — so the number itself was what got cut.
 speed="$(cfg READOUT_SPEED)"; [ -n "$speed" ] || speed="1.2"
-printf ' | speed ×%s' "$speed"
+printf ' | ×%s' "$speed"
 
 [ "$(cfg CHUNK_MARKER)" = "on" ] && printf ' | 🔔'
 
