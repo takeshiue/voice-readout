@@ -34,7 +34,7 @@ fi
 # then collapse whitespace.
 CLEANED="$(printf '%s' "$LAST_MSG" \
   | sed -E '/^```/,/^```/d' \
-  | sed -E 's/`[^`]*`//g' \
+  | sed -E 's/`([^`]*)`/\1/g' \
   | sed -E 's/\[([^]]*)\]\([^)]*\)/\1/g' \
   | sed -E 's#https?://[^ ]+##g' \
   | sed -E 's/\*\*([^*]*)\*\*/\1/g; s/__([^_]*)__/\1/g' \
@@ -138,7 +138,7 @@ if [ "$READOUT_MODE" = "full" ]; then
     # Same refusal guard + empty fallback + on-device ceiling trim as the normal
     # summarizer path below (kept in sync deliberately).
     case "$SUMMARY" in
-      *申し訳ありませんが*|*ロールプレイ*|*応答はできません*|*お応えできません*|*"I can't"*|*"I cannot"*)
+      *申し訳ありませんが*|*ロールプレイ*|*応答はできません*|*お応えできません*|*"I can't"*|*"I cannot"*|*要約の対象*|*前のメッセージ*|*提供されていない*)
         log fallback "summarizer refused style, using cleaned text"
         SUMMARY="" ;;
     esac
@@ -186,7 +186,7 @@ SUMMARY="$(printf '%s' "$CLEANED_TRIMMED" | claude --safe-mode -p --model haiku 
 # produces 「申し訳ないのよ」 in apology summaries, so plain 申し訳/できません
 # would throw those away too.
 case "$SUMMARY" in
-  *申し訳ありませんが*|*ロールプレイ*|*応答はできません*|*お応えできません*|*"I can't"*|*"I cannot"*)
+  *申し訳ありませんが*|*ロールプレイ*|*応答はできません*|*お応えできません*|*"I can't"*|*"I cannot"*|*要約の対象*|*前のメッセージ*|*提供されていない*)
     log fallback "summarizer refused style, using cleaned text"
     SUMMARY=""
     ;;
