@@ -12,14 +12,138 @@
 #   voice readout | greet 🔊🔊 | notif 🔊 inworld
 #   resp 🔊 full inworld | ×1.3 | 🔔
 #
-# Wire it up in settings.json (NOT a plugin hook, so ${CLAUDE_PLUGIN_ROOT} is
-# not expanded here — use an absolute path):
-#   "statusLine": { "type": "command", "command": "<abs path to this file>" }
+# Wiring it up is this script's own job:
+#
+#   statusline.sh --install     register in settings.json
+#   statusline.sh --uninstall   remove that registration
+#
+# statusLine is not a plugin component — Claude Code has no such slot, only
+# Skills / Agents / Hooks / MCP / LSP — so unlike the hooks it cannot register
+# itself through the manifest. The README used to ask the user to hand-write an
+# absolute path into settings.json instead, which is the one part of installing
+# this plugin that was manual, error-prone, and (for a marketplace install)
+# version-dependent. Doing it here removes the hand-written path entirely: the
+# script that knows where it lives is this one.
 #
 # Claude Code pipes session JSON on stdin; we don't need it, so we ignore it.
-# The command runs on every render, so keep it to cheap file reads only.
+# The command runs on every render, so keep it to cheap file reads only — hence
+# the --install branch returning long before any of the rendering work below.
 
 set -u
+
+# --- Registration (--install / --uninstall). --------------------------------
+# Placed first so the render path — which is called with no arguments on every
+# single frame — pays one string comparison and nothing else.
+case "${1:-}" in
+  --install|--uninstall)
+    ACTION="$1"; shift
+    # Which settings file. Written to the USER's settings, never a project's:
+    # the plugin is enabled globally, so its status line belongs to every
+    # session, and a project's .claude/settings.json is usually committed —
+    # putting a machine-specific absolute path in there would break it for
+    # everyone else who checks out that repo. --file names another one
+    # explicitly, for anyone who wants a different scope; there is deliberately
+    # no attempt to GUESS a project directory (a script run by hand gets no
+    # CLAUDE_PROJECT_DIR, so any guess would just be $PWD, which is not the
+    # same thing).
+    # CLAUDE_CONFIG_DIR relocates the whole config directory (it is a real
+    # Claude Code variable, not a guess — verified in the binary), so honour it
+    # or we would write to a file nothing reads.
+    SETTINGS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+    FORCE=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --file) SETTINGS="${2:-}"; shift 2 ;;
+        --force) FORCE=1; shift ;;
+        *) echo "unknown option: $1" >&2; exit 1 ;;
+      esac
+    done
+
+    SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+    if ! command -v jq >/dev/null 2>&1; then
+      echo "jq が無いので settings.json を編集できません。次の行を手で追加してください:" >&2
+      echo "  \"statusLine\": { \"type\": \"command\", \"command\": \"$SELF\" }" >&2
+      exit 1
+    fi
+
+    mkdir -p "$(dirname "$SETTINGS")" 2>/dev/null
+    [ -f "$SETTINGS" ] || printf '{}\n' > "$SETTINGS"
+    if ! jq -e . "$SETTINGS" >/dev/null 2>&1; then
+      echo "$SETTINGS が JSON として読めません。手で直してから再実行してください。" >&2
+      exit 1
+    fi
+
+    CURRENT="$(jq -r '.statusLine.command // ""' "$SETTINGS")"
+
+    if [ "$ACTION" = "--uninstall" ]; then
+      case "$CURRENT" in
+        *voice-readout*)
+          cp "$SETTINGS" "${SETTINGS}.bak-voice-readout" 2>/dev/null
+          jq 'del(.statusLine)' "$SETTINGS" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "$SETTINGS"
+          echo "✓ statusLine の登録を外しました: $SETTINGS"
+          ;;
+        "") echo "- statusLine は登録されていません: $SETTINGS" ;;
+        *)  echo "- statusLine は別のスクリプトを指しているので触りません: $CURRENT" ;;
+      esac
+      exit 0
+    fi
+
+    # --install. An existing registration for something else is the user's own
+    # choice and is not silently replaced.
+    case "$CURRENT" in
+      ""|*voice-readout*) ;;
+      *)
+        if [ "$FORCE" -ne 1 ]; then
+          echo "既に別の statusLine が登録されています:" >&2
+          echo "  $CURRENT" >&2
+          echo "置き換えるなら --force を付けて再実行してください。" >&2
+          exit 1
+        fi
+        ;;
+    esac
+
+    cp "$SETTINGS" "${SETTINGS}.bak-voice-readout" 2>/dev/null
+    if jq --arg cmd "$SELF" '.statusLine = {type: "command", command: $cmd}' "$SETTINGS" > "${SETTINGS}.tmp" \
+       && [ -s "${SETTINGS}.tmp" ]; then
+      mv "${SETTINGS}.tmp" "$SETTINGS"
+      echo "✓ statusLine を登録しました: $SETTINGS"
+      echo "  → $SELF"
+      echo "  次に Claude Code を起動したときから表示されます。"
+    else
+      rm -f "${SETTINGS}.tmp"
+      echo "! 書き込みに失敗しました: $SETTINGS" >&2
+      exit 1
+    fi
+
+    # A project's settings take precedence over the user's, key by key. So a
+    # project that defines its own statusLine hides the one just registered
+    # while you work in it — which otherwise looks exactly like the
+    # registration not having worked. Only the current directory can be
+    # checked from here, and it is only ever reported, never edited.
+    for pf in "$PWD/.claude/settings.json" "$PWD/.claude/settings.local.json"; do
+      [ -f "$pf" ] || continue
+      other="$(jq -r '.statusLine.command // ""' "$pf" 2>/dev/null)"
+      case "$other" in
+        ""|*voice-readout*) ;;
+        *)
+          echo
+          echo "⚠ このディレクトリのプロジェクト設定にも statusLine があります:"
+          echo "    $pf"
+          echo "    $other"
+          echo "  プロジェクト設定の方が優先されるため、ここで作業している間は"
+          echo "  そちらが表示されます（他の場所では上の登録が有効です）。"
+          ;;
+      esac
+    done
+    exit 0
+    ;;
+  --help|-h)
+    echo "Usage: statusline.sh [--install|--uninstall] [--file <settings.json>] [--force]"
+    echo "  引数なしで実行すると、Claude Code の statusLine コマンドとして1行を出力します。"
+    exit 0
+    ;;
+esac
 
 # ${#s} must count characters, not bytes, for the width arithmetic below.
 export LC_ALL=C.utf8

@@ -288,11 +288,34 @@ rm -rf ~/.voice-readout-tmp/
 
 ## ステータスライン（今の状態を一目で見る）
 
-「次の応答は喋るのか、黙るのか」を毎回チャットで訊かずに済むよう、Claude Code のコンソール最下部に現在の状態を1行で表示できる。`bin/statusline.sh` を `settings.json` の `statusLine` に登録する（プラグインのフックではないので `${CLAUDE_PLUGIN_ROOT}` は展開されない。絶対パスで書く）：
+「次の応答は喋るのか、黙るのか」を毎回チャットで訊かずに済むよう、Claude Code のコンソール最下部に現在の状態を1行で表示できる。
+
+**チャットで「ステータスラインを出して」と頼めば設定される。** 裏では次が実行される（自分で打ってもよい）：
+
+```sh
+bash <プラグイン>/bin/statusline.sh --install     # 登録
+bash <プラグイン>/bin/statusline.sh --uninstall   # 解除
+```
+
+`~/.claude/settings.json`（＝個人設定）に、スクリプト自身の絶対パスが書き込まれる。**パスを人が打つ必要はない。** 反映は次回の Claude Code 起動から。
+
+<details>
+<summary>細かい挙動</summary>
+
+- 書き込み先は `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json`。別のファイルに書きたい場合は `--file <パス>`
+- **個人設定に書く理由**：プラグインは全セッションで有効なので表示も全セッションに要る。またプロジェクトの `.claude/settings.json` は git で共有されることが多く、そこに端末固有の絶対パスを書くと他の人の環境を壊す
+- 既に**別のスクリプト**が `statusLine` に登録されている場合は、奪わずに中止する（置き換えるなら `--force`）
+- そのプロジェクトの設定に `statusLine` があると**そちらが優先される**（キー単位で上書きされるため）。カレントディレクトリにそれを見つけた場合は警告を出す
+- 書き換え前に `settings.json.bak-voice-readout` を残す
+- **マーケットプレイス経由で入れた場合、更新するとプラグインの置き場所（バージョン番号を含むパス）が変わる。** 表示が消えたら `--install` をもう一度実行すれば直る
+
+手で書く場合はこの形（`${CLAUDE_PLUGIN_ROOT}` はここでは展開されないので絶対パスで）：
 
 ```json
 "statusLine": { "type": "command", "command": "/絶対パス/voice-readout/bin/statusline.sh" }
 ```
+
+</details>
 
 表示はこうなる：
 
