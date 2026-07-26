@@ -2,7 +2,7 @@
 # Flips a voice-readout setting. Meant to be run by Claude when the user asks
 # in chat ("音声読み上げをオフにして" / "フル読み上げにして" etc).
 #
-# Usage: toggle.sh <stop|notification|all|greeting|farewell|overflow-pipeline|chunk-marker> <on|off>
+# Usage: toggle.sh <stop|notification|all|greeting|farewell|overflow-pipeline|hybrid|chunk-marker> <on|off>
 #        toggle.sh mode <summary|full>
 #        toggle.sh speed <0.5-2.0>
 #        toggle.sh backend <ondevice|gemini|inworld|elevenlabs>
@@ -20,6 +20,13 @@
 #   farewell     SessionEnd farewell, a fixed clip (assets/session-end.wav)
 #                played once when the session ends (also separate from "all")
 #   overflow-pipeline  read the opening verbatim while the summary is generated
+#   hybrid       "full hybrid": in full mode with a cloud voice, speak the
+#                opening on the on-device engine while the cloud audio is still
+#                generating, then hand over mid-readout. Removes the cloud's
+#                first-sound wait at the cost of the voice changing once, at a
+#                sentence boundary. No effect in summary mode or on an ondevice
+#                backend. Tune HYBRID_UNIT_CHARS / HYBRID_MAX_ONDEVICE_CHARS /
+#                HYBRID_SPECULATION. Default off.
 #   chunk-marker Diagnostic aid: play a short cue (assets/chunk-marker.wav) at
 #                every cloud chunk boundary, so where the text was split and how
 #                seamless the handoff sounds are both audible. Default off.
@@ -46,7 +53,9 @@
 #                ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES
 #                TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT
 #                WARM_SKIP_WINDOW (skip preflight if last readout succeeded
-#                within N sec; 0 disables) WATCH_INTERVAL LOG_MAX_BYTES
+#                within N sec; 0 disables) HYBRID_UNIT_CHARS
+#                HYBRID_MAX_ONDEVICE_CHARS HYBRID_SPECULATION
+#                WATCH_INTERVAL LOG_MAX_BYTES
 #                TTS_RATE TTS_PITCH NOTIFY_COOLDOWN
 #                STARTUP_GREETING_TEXT (the session-start greeting text)
 #   gemini-key      sets/clears the Gemini API key used by the gemini backend
@@ -74,7 +83,7 @@ CONFIG_FILE="${PLUGIN_DATA_DIR}/voice-readout-config"
 ENV_FILE="${PLUGIN_DATA_DIR}/voice-readout.env"
 
 usage() {
-  echo "Usage: $0 <stop|notification|all|greeting|farewell|overflow-pipeline|chunk-marker> <on|off>" >&2
+  echo "Usage: $0 <stop|notification|all|greeting|farewell|overflow-pipeline|hybrid|chunk-marker> <on|off>" >&2
   echo "       $0 mode <summary|full>" >&2
   echo "       $0 speed <0.5-2.0>" >&2
   echo "       $0 backend <ondevice|gemini|inworld|elevenlabs>" >&2
@@ -211,6 +220,17 @@ case "$TARGET" in
     add_default WARM_SKIP_WINDOW 120
     add_default OVERFLOW_PIPELINE off
     add_default OVERFLOW_OPENING_CHARS 150
+    # "full hybrid": in full mode with a cloud voice, cover the cloud's
+    # first-sound wait with the on-device engine and hand over mid-readout.
+    # UNIT_CHARS is the handover granularity (also the most on-device voice the
+    # listener can hear past the moment the cloud was ready); MAX_ONDEVICE_CHARS
+    # is where hybrid stops reading on and waits for the cloud instead;
+    # SPECULATION is how many handover candidates are generated at once (2 = one
+    # wasted API call per readout, faster recovery when the cloud lags).
+    add_default HYBRID_TTS off
+    add_default HYBRID_UNIT_CHARS 60
+    add_default HYBRID_MAX_ONDEVICE_CHARS 240
+    add_default HYBRID_SPECULATION 1
     add_default WATCH_INTERVAL 120
     add_default LOG_MAX_BYTES 1048576
     # One reading-pace index for every engine (1.0 = about 300 chars/min, an
@@ -234,7 +254,7 @@ case "$TARGET" in
     cat "$CONFIG_FILE"
     exit 0
     ;;
-  stop|notification|all|greeting|farewell|overflow-pipeline|chunk-marker)
+  stop|notification|all|greeting|farewell|overflow-pipeline|hybrid|chunk-marker)
     case "$STATE" in on|off) ;; *) usage ;; esac
     case "$TARGET" in
       stop) set_key STOP_READOUT "$STATE" ;;
@@ -246,6 +266,9 @@ case "$TARGET" in
       # Experimental: read the opening verbatim while summarizing in the
       # background, so a long readout starts immediately. Default off.
       overflow-pipeline) set_key OVERFLOW_PIPELINE "$STATE" ;;
+      # full hybrid: on-device opening, cloud voice for the rest. Only bites in
+      # full mode with a cloud backend; harmless (ignored) otherwise.
+      hybrid) set_key HYBRID_TTS "$STATE" ;;
       # Diagnostic: append the cue clip to the end of each cloud chunk so the
       # chunk boundaries are audible. Default off; turn on when checking how the
       # text got split or whether the chunk handoff still sounds seamless.
@@ -335,10 +358,10 @@ case "$TARGET" in
       # numeric. set_key's sed substitution can't carry a '/' in the value, so
       # keep the greeting text slash-free (edit the config file directly for
       # anything unusual).
-      ONDEVICE_MAX_CHARS|TTS_CHUNK_CHARS|TTS_CHUNK_RETRIES|TTS_RETRY_WAIT_BASE|TTS_RETRY_WAIT|PREFLIGHT_TIMEOUT|WARM_SKIP_WINDOW|OVERFLOW_OPENING_CHARS|WATCH_INTERVAL|LOG_MAX_BYTES|TTS_RATE|TTS_PITCH|NOTIFY_COOLDOWN|ELEVENLABS_GAIN|ELEVENLABS_ATEMPO|ELEVENLABS_MODEL|ELEVENLABS_SPEED|GEMINI_MODEL|GEMINI_SPEED|INWORLD_MODEL|INWORLD_SPEAKING_RATE|CLOUD_HTTP_TIMEOUT|CLOUD_CHUNK_CHARS|CLOUD_FIRST_CHUNK_CHARS|CLOUD_PLAY_LEAD|STARTUP_GREETING_TEXT|SESSION_END_GREETING_TEXT) ;;
+      ONDEVICE_MAX_CHARS|TTS_CHUNK_CHARS|TTS_CHUNK_RETRIES|TTS_RETRY_WAIT_BASE|TTS_RETRY_WAIT|PREFLIGHT_TIMEOUT|WARM_SKIP_WINDOW|OVERFLOW_OPENING_CHARS|HYBRID_UNIT_CHARS|HYBRID_MAX_ONDEVICE_CHARS|HYBRID_SPECULATION|WATCH_INTERVAL|LOG_MAX_BYTES|TTS_RATE|TTS_PITCH|NOTIFY_COOLDOWN|ELEVENLABS_GAIN|ELEVENLABS_ATEMPO|ELEVENLABS_MODEL|ELEVENLABS_SPEED|GEMINI_MODEL|GEMINI_SPEED|INWORLD_MODEL|INWORLD_SPEAKING_RATE|CLOUD_HTTP_TIMEOUT|CLOUD_CHUNK_CHARS|CLOUD_FIRST_CHUNK_CHARS|CLOUD_PLAY_LEAD|STARTUP_GREETING_TEXT|SESSION_END_GREETING_TEXT) ;;
       *)
         echo "unknown tuning key: $TUNE_KEY" >&2
-        echo "valid keys: ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT WARM_SKIP_WINDOW OVERFLOW_OPENING_CHARS WATCH_INTERVAL LOG_MAX_BYTES TTS_RATE TTS_PITCH NOTIFY_COOLDOWN ELEVENLABS_GAIN ELEVENLABS_ATEMPO ELEVENLABS_MODEL ELEVENLABS_SPEED GEMINI_MODEL GEMINI_SPEED INWORLD_MODEL INWORLD_SPEAKING_RATE CLOUD_HTTP_TIMEOUT CLOUD_CHUNK_CHARS CLOUD_FIRST_CHUNK_CHARS CLOUD_PLAY_LEAD STARTUP_GREETING_TEXT SESSION_END_GREETING_TEXT" >&2
+        echo "valid keys: ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT WARM_SKIP_WINDOW OVERFLOW_OPENING_CHARS HYBRID_UNIT_CHARS HYBRID_MAX_ONDEVICE_CHARS HYBRID_SPECULATION WATCH_INTERVAL LOG_MAX_BYTES TTS_RATE TTS_PITCH NOTIFY_COOLDOWN ELEVENLABS_GAIN ELEVENLABS_ATEMPO ELEVENLABS_MODEL ELEVENLABS_SPEED GEMINI_MODEL GEMINI_SPEED INWORLD_MODEL INWORLD_SPEAKING_RATE CLOUD_HTTP_TIMEOUT CLOUD_CHUNK_CHARS CLOUD_FIRST_CHUNK_CHARS CLOUD_PLAY_LEAD STARTUP_GREETING_TEXT SESSION_END_GREETING_TEXT" >&2
         exit 1
         ;;
     esac

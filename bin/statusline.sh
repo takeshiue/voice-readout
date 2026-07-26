@@ -478,6 +478,17 @@ fi
 [ -n "$resp_backend" ] || resp_backend="$(cfg TTS_BACKEND)"
 [ -n "$resp_backend" ] || resp_backend="ondevice"
 
+# "full hybrid": the on-device engine covers the cloud's first-sound wait and
+# then hands over mid-readout. Shown as part of the mode tag rather than as its
+# own segment — it is a variant of full, not a separate thing to read. Shown
+# ONLY when it can actually take effect: HYBRID_TTS is ignored in summary mode
+# and on an ondevice backend, and a tag for something inert is worse than no tag
+# (it invites tuning a knob that is not in the path).
+if [ "$resp_mode" = "full " ] && [ "$(cfg HYBRID_TTS)" = "on" ] \
+   && [ "$resp_backend" != "ondevice" ]; then
+  resp_mode="full hyb "
+fi
+
 # The two 決まり文句 (session start / session end) are toggled independently of
 # the readout itself, and both play fixed clips rather than a chosen backend —
 # so they get one shared "greet" segment with no backend name: left icon is the

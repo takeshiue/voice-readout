@@ -1478,6 +1478,22 @@ gen_cloud() {
   return 0
 }
 
+# The exact text speak_cloud_chunked would generate FIRST for TEXT. Used by the
+# hybrid handover (speak_hybrid): a speculative generator produces that chunk in
+# advance, and speak_cloud_chunked then accepts the finished file as its chunk 0
+# instead of generating it again. Both sides read the same two config keys in
+# the same process, so the two splits are identical by construction — if they
+# ever diverged the seed would be audio of the wrong text, which is why this
+# derives the chunk rather than approximating it.
+_cloud_first_chunk() {
+  local c=""
+  IFS= read -r -d '' c \
+    < <(split_into_speech_chunks "$1" \
+          "$(get_tuning_num CLOUD_CHUNK_CHARS 200)" \
+          "$(get_tuning_num CLOUD_FIRST_CHUNK_CHARS 80)") || true
+  printf '%s' "$c"
+}
+
 # Best-effort audio length in seconds. WAV from gemini/inworld is 24kHz mono
 # 16-bit = 48000 bytes/sec, so bytes/48000 is exact and cheap (and ffprobe often
 # can't read Inworld's streamed WAV header anyway). MP3 from elevenlabs needs
@@ -1545,10 +1561,15 @@ _play_media_file() {
 # raise it for a backend whose generation is slower relative to playback, at the
 # cost of that many parallel API calls in flight.
 #
+# SEED (4th arg, optional) is a path to audio already generated for this text's
+# first chunk — see speak_hybrid, which generates it speculatively while the
+# on-device engine covers the opening. It is moved into chunk 0's place and its
+# generation is skipped, so the handover has no generation wait at all.
+#
 # Returns 0 if it spoke everything (or was stopped mid-way), 1 only if the very
 # first chunk could not be generated, so the caller can fall back to ondevice.
 speak_cloud_chunked() {
-  local backend="$1" text="$2" cap="$3"
+  local backend="$1" text="$2" cap="$3" seed="${4:-}"
   command -v termux-media-player >/dev/null 2>&1 || { log error "${backend}: termux-media-player not found"; return 1; }
 
   # Few, large chunks minimise the per-chunk termux-media-player play round-trip
@@ -1594,13 +1615,28 @@ speak_cloud_chunked() {
   local prefetch=2   # in-flight lookahead buffer; see the header comment.
 
   # gen_pid[k] = background PID generating chunk k (once launched). Sparse.
+  # gen_done[k] = chunk k's audio was already in place before the loop started
+  # (the SEED), so there is no generator to wait for.
   local -a gen_pid=()
+  local -a gen_done=()
+
+  # A caller that already generated chunk 0 hands the file over here. Moved
+  # rather than copied: the deterministic per-chunk name is what the play loop
+  # below looks for, and leaving a second copy behind would outlive the readout.
+  if [ -n "$seed" ] && [ -s "$seed" ]; then
+    local seed_dest; seed_dest="$(_cloud_audio_path "$backend" 0)"
+    if [ "$seed" = "$seed_dest" ] || mv -f "$seed" "$seed_dest" 2>/dev/null; then
+      gen_done[0]=1
+      log info "${backend} pipeline: chunk 0 pre-generated, skipping its generation"
+    fi
+  fi
 
   # Seed the buffer: chunk 0 plus PREFETCH chunks ahead, all generating in
   # parallel from the start. Chunk 0's own generation is the only wait the
   # listener sees before the first sound.
   local k
   for (( k = 0; k <= prefetch && k < n; k++ )); do
+    [ -n "${gen_done[$k]:-}" ] && continue
     gen_cloud "$backend" "${chunks[$k]}" "$k" &
     gen_pid[$k]=$!
   done
@@ -1621,7 +1657,10 @@ speak_cloud_chunked() {
     fi
 
     # Wait for chunk i (its generator was launched earlier) and check it worked.
-    if [ -z "${gen_pid[$i]:-}" ] || ! wait "${gen_pid[$i]}"; then
+    # A seeded chunk has no generator: its audio was finished before we started.
+    if [ -n "${gen_done[$i]:-}" ]; then
+      :
+    elif [ -z "${gen_pid[$i]:-}" ] || ! wait "${gen_pid[$i]}"; then
       if [ "$i" -eq 0 ]; then
         # Nothing spoken yet — let the caller retry the whole text on ondevice.
         log error "${backend} pipeline: first chunk failed to generate, falling back"
@@ -1674,6 +1713,244 @@ speak_cloud_chunked() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# full hybrid — start on the on-device engine, hand over to the cloud voice
+# ---------------------------------------------------------------------------
+#
+# A cloud readout's first sound costs generation (~6s on gemini) plus the
+# ~2s termux-media-player round trip; the on-device engine starts in ~3s and
+# needs no network. Hybrid spends that difference: speak the opening on-device
+# while the cloud generates, then switch voices for the rest.
+#
+# The hard part is that the handover point cannot be chosen in advance. Decide
+# it too early and a slow cloud leaves a silence; too late and the listener
+# hears more of the on-device voice than they had to. So the text is cut into
+# small on-device UNITS, and at each unit boundary we ask "is the cloud ready
+# yet?" — the handover lands wherever the answer first becomes yes.
+#
+# What is generated speculatively is therefore not "the next chunk" but "the
+# whole rest of the text, starting at boundary b":
+#
+#   text:      [unit 0][unit 1][unit 2 .....................]
+#   candidate 1        └─ cloud takes over from here
+#   candidate 2                └─ cloud takes over from here
+#
+# The candidates OVERLAP and are mutually exclusive. Candidate 1 contains unit
+# 1; candidate 2 does not, and is only usable because the on-device engine read
+# unit 1 in the meantime. That is what keeps the two voices from either
+# repeating a sentence or skipping one.
+#
+# If the cloud is not ready when a boundary arrives we do not wait in silence:
+# the candidate is thrown away, the next unit is read on-device, and a fresh
+# candidate is launched one boundary later — which then has that unit's whole
+# reading time (~11s at 60 chars) to finish in. Cascading more than once is
+# rare because of that, and the discarded generation is the price of never
+# going quiet. HYBRID_SPECULATION=2 keeps two candidates in flight instead,
+# trading one guaranteed wasted API call per readout for a faster recovery.
+#
+# Playback is strictly sequential and that is load-bearing: termux-tts-speak
+# (the TTS engine) and termux-media-player (Android's media service) are
+# independent outputs and will happily talk over each other. speak() blocks
+# until its unit has finished, so the cloud never starts while a unit is still
+# being spoken.
+#
+# Returns 1 WITHOUT speaking when hybrid does not apply (no on-device engine,
+# or text too short to split), so the caller can run the ordinary cloud path.
+# Any other outcome returns 0 — once a unit has been spoken, falling back to
+# "read the whole text again" would repeat the opening aloud.
+
+# _hyb_spec_launch BACKEND SUFFIX_TEXT BOUNDARY — start generating the audio the
+# cloud pipeline would need first if it took over at BOUNDARY. Prints the PID.
+# The exit status goes to a marker file beside the audio, because the readiness
+# check has to be non-blocking and `wait` is not.
+_hyb_spec_launch() {
+  local backend="$1" suffix_text="$2" b="$3" out
+  out="$(_cloud_audio_path "$backend" "hyb-$b")" || return 1
+  rm -f "${out}.rc" 2>/dev/null
+  # >/dev/null is not tidiness, it is what makes this asynchronous. The PID is
+  # returned through a command substitution, and a background job started inside
+  # one inherits the substitution's pipe: bash waits for EVERY holder of the
+  # write end to close it, so without this the caller blocks until the generator
+  # exits — i.e. the on-device opening would not start until the cloud audio was
+  # already finished, which is exactly the wait hybrid exists to remove
+  # (measured: the opening began 53s in, after a 45s generation, instead of ~8s).
+  (
+    gen_cloud "$backend" "$(_cloud_first_chunk "$suffix_text")" "hyb-$b"
+    printf '%s' "$?" > "${out}.rc"
+  ) >/dev/null 2>&1 &
+  printf '%s' "$!"
+}
+
+# _hyb_spec_state BACKEND BOUNDARY — pending | ok | fail. "fail" is a generation
+# that finished badly (no key, no network, API error) and means hybrid should
+# give up on the cloud entirely rather than keep speculating into the same wall.
+_hyb_spec_state() {
+  local out rc
+  out="$(_cloud_audio_path "$1" "hyb-$2")" || { printf 'fail'; return; }
+  [ -s "${out}.rc" ] || { printf 'pending'; return; }
+  rc="$(cat "${out}.rc" 2>/dev/null)"
+  if [ "$rc" = "0" ] && [ -s "$out" ]; then printf 'ok'; else printf 'fail'; fi
+}
+
+# _hyb_spec_discard BACKEND BOUNDARY [PID] — abandon a candidate. The generator
+# is killed best-effort (its curl is a child, hence the pkill -P) to stop paying
+# for audio nobody will hear; if it survives and writes its file anyway, the
+# name is per-readout and the scratch sweep in speak_cloud_chunked reclaims it.
+_hyb_spec_discard() {
+  local out; out="$(_cloud_audio_path "$1" "hyb-$2")" || return 0
+  if [ -n "${3:-}" ]; then
+    command -v pkill >/dev/null 2>&1 && pkill -P "$3" 2>/dev/null
+    kill "$3" 2>/dev/null
+  fi
+  rm -f "$out" "${out}.rc" "${out%.wav}.pcm" "${out%.mp3}-raw.mp3" 2>/dev/null
+  return 0
+}
+
+speak_hybrid() {
+  local backend="$1" text="$2" cap="$3"
+  command -v termux-tts-speak >/dev/null 2>&1 || return 1
+  command -v termux-media-player >/dev/null 2>&1 || return 1
+
+  local unit_max ondevice_cap depth omax
+  # Unit size is the granularity of the handover, so it is also the maximum
+  # amount of on-device voice the listener can be made to sit through past the
+  # moment the cloud became ready. 60 chars is ~11s at the on-device engine's
+  # ~5.3 chars/sec, comfortably longer than any backend's generation, so the
+  # usual outcome is exactly one unit on-device and no cascade at all.
+  unit_max="$(get_tuning_num HYBRID_UNIT_CHARS 60)"
+  # Past this many characters read on-device, stop consuming units and wait for
+  # the cloud instead. Reading on and on is what wedges the Termux:API engine
+  # (see the ceiling in speak()), and by this point the cloud is misbehaving
+  # anyway — a few seconds of silence is the cheaper failure.
+  ondevice_cap="$(get_tuning_num HYBRID_MAX_ONDEVICE_CHARS 240)"
+  depth="$(get_tuning_num HYBRID_SPECULATION 1)"
+  [ "$depth" -lt 1 ] && depth=1
+  # A unit is spoken by a single ondevice speak() call, so it must fit under
+  # that backend's own ceiling or speak() would decline it (rc 3) and the unit
+  # would be silently skipped.
+  omax="$(ondevice_max_chars)"
+  [ "$unit_max" -gt "$omax" ] && unit_max="$omax"
+  [ "$unit_max" -lt 10 ] && unit_max=10
+
+  local units=() u
+  while IFS= read -r -d '' u; do [ -n "$u" ] && units+=("$u"); done \
+    < <(split_into_speech_chunks "$text" "$unit_max")
+  local n=${#units[@]}
+  # One unit means there is no "rest" to hand over — the whole text would be
+  # read on-device and the cloud voice the user chose would never be heard. Let
+  # the caller speak it the ordinary way instead.
+  [ "$n" -le 1 ] && return 1
+
+  # suffix[j] = everything from unit j to the end, i.e. what the cloud takes
+  # over if the handover happens at boundary j. Built by concatenating the units
+  # themselves rather than by slicing the original text, so the on-device part
+  # and the cloud part meet exactly: no sentence can be dropped between them or
+  # spoken twice.
+  local suffix=() j p
+  suffix[$(( n - 1 ))]="${units[$(( n - 1 ))]}"
+  for (( j = n - 2; j >= 0; j-- )); do
+    suffix[$j]="${units[$j]}${suffix[$(( j + 1 ))]}"
+  done
+
+  # How long to wait for the cloud once the on-device cap is reached, before
+  # giving up and reading the remainder on-device. Longer than any healthy
+  # generation, short enough not to feel like a hang.
+  local wait_cap=30
+
+  local b=1 i=0 od_chars=0 state
+  local -a spec_pid=()
+
+  while [ "$i" -lt "$n" ]; do
+    if [ -e "$STOP_SWITCH_FILE" ]; then
+      log skip "読み上げ停止中 (hybrid, ${i}/${n} units spoken)"
+      for (( p = 0; p < n; p++ )); do
+        if [ -n "${spec_pid[$p]:-}" ]; then _hyb_spec_discard "$backend" "$p" "${spec_pid[$p]}"; fi
+      done
+      return 0
+    fi
+
+    if [ "$i" -eq "$b" ]; then
+      state="$(_hyb_spec_state "$backend" "$b")"
+      if [ "$state" = pending ] && [ "$od_chars" -ge "$ondevice_cap" ]; then
+        local waited=0
+        while [ "$waited" -lt "$wait_cap" ] && [ "$state" = pending ]; do
+          [ -e "$STOP_SWITCH_FILE" ] && break
+          sleep 1
+          waited=$(( waited + 1 ))
+          state="$(_hyb_spec_state "$backend" "$b")"
+        done
+        log info "hybrid: ondevice cap reached (${od_chars} chars), waited ${waited}s for cloud -> ${state}"
+      fi
+
+      case "$state" in
+        ok)
+          for (( p = 0; p < n; p++ )); do
+            [ "$p" -eq "$b" ] && continue
+            if [ -n "${spec_pid[$p]:-}" ]; then _hyb_spec_discard "$backend" "$p" "${spec_pid[$p]}"; fi
+          done
+          local seed; seed="$(_cloud_audio_path "$backend" "hyb-$b")"
+          rm -f "${seed}.rc" 2>/dev/null
+          log info "hybrid: handing over to ${backend} at unit ${b}/${n} (${od_chars} chars read ondevice)"
+          if speak_cloud_chunked "$backend" "${suffix[$b]}" "$cap" "$seed"; then
+            return 0
+          fi
+          # Seeding means the first chunk is already in hand, so this should be
+          # unreachable — but if the pipeline gives up anyway the listener has
+          # heard only an opening. Finish on-device rather than stop there.
+          log fallback "hybrid: cloud pipeline failed after handover, remaining via ondevice"
+          break
+          ;;
+        fail)
+          log fallback "hybrid: cloud generation failed at unit ${b}, remaining via ondevice"
+          break
+          ;;
+        pending)
+          # Throw this candidate away and aim one boundary further on.
+          _hyb_spec_discard "$backend" "$b" "${spec_pid[$b]:-}"
+          unset "spec_pid[$b]"
+          b=$(( i + 1 ))
+          log info "hybrid: cloud not ready at unit ${i}/${n}, reading on and retargeting handover to ${b}"
+          ;;
+      esac
+    fi
+
+    # Keep the speculation window (boundaries b .. b+depth-1) filled. This sits
+    # AFTER the retarget above and BEFORE the unit is spoken, and both halves of
+    # that matter: a candidate launched here generates during this unit's ~11s
+    # of speech, so it has a real chance of being ready at the next boundary.
+    # Filling at the top of the loop instead put the new candidate's launch
+    # *after* the unit was spoken, so every boundary from the first cascade on
+    # was checked microseconds after its generator started, always came back
+    # pending, and the readout degenerated to entirely on-device (observed in
+    # the stub harness: retarget 1→2→3, no handover, no cloud audio at all).
+    for (( j = b; j < b + depth && j < n; j++ )); do
+      if [ -z "${spec_pid[$j]:-}" ]; then
+        spec_pid[$j]="$(_hyb_spec_launch "$backend" "${suffix[$j]}" "$j")"
+      fi
+    done
+
+    VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 \
+      speak "${units[$i]}" "$cap" ""
+    od_chars=$(( od_chars + ${#units[$i]} ))
+    i=$(( i + 1 ))
+  done
+
+  # Reached either because every unit was read on-device (the handover boundary
+  # ran off the end of the text) or because the cloud failed. Either way, drop
+  # any candidate still in flight and speak whatever is left on-device.
+  for (( p = 0; p < n; p++ )); do
+    if [ -n "${spec_pid[$p]:-}" ]; then _hyb_spec_discard "$backend" "$p" "${spec_pid[$p]}"; fi
+  done
+  while [ "$i" -lt "$n" ]; do
+    [ -e "$STOP_SWITCH_FILE" ] && break
+    VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 \
+      speak "${units[$i]}" "$cap" ""
+    i=$(( i + 1 ))
+  done
+  log spoke "hybrid: ${n} units, all ondevice (no cloud handover)"
+  return 0
+}
+
 speak() {
   # Checked first, before the config, before the enable toggles, before the
   # backend is even resolved. Anything that reads configuration can be
@@ -1698,6 +1975,19 @@ speak() {
       # short text stays a single request. On a hard failure it returns 1 and we
       # fall back to ondevice, exactly as the per-backend calls used to.
       local _cloud_backend; _cloud_backend="$(get_tts_backend "$fn")"
+      # "full hybrid" (HYBRID_TTS): speak the opening on the on-device engine
+      # while the cloud voice generates, then hand over — see speak_hybrid.
+      # Only for the full function: a notification or a one-sentence summary is
+      # over before a voice change could pay for itself, and switching voices
+      # inside a short phrase would be all seam and no benefit. speak_hybrid
+      # returns 1 without speaking when it does not apply, and then the ordinary
+      # cloud path below runs unchanged.
+      if [ "$fn" = "full" ] && [ "$(get_tuning HYBRID_TTS off)" = "on" ]; then
+        if speak_hybrid "$_cloud_backend" "$text" "$cap"; then
+          clear_failure_notifications
+          return 0
+        fi
+      fi
       if speak_cloud_chunked "$_cloud_backend" "$text" "$cap"; then
         clear_failure_notifications
       else
