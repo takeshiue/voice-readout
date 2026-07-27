@@ -463,6 +463,42 @@ ONDEVICE_LOCK_FILE="${PLUGIN_DATA_DIR}/voice-readout-ondevice.lock"
 # an active conversation). Written on success below; read at the preflight gate.
 ONDEVICE_LASTSPOKE_FILE="${PLUGIN_DATA_DIR}/voice-readout-ondevice-lastspoke"
 
+# Termux wake lock for on-device readouts (why it is taken at all: see the call
+# site in speak()). Normally the same speak() call takes and releases it, but
+# every termux-* invocation is a ~1.9s Termux:API round trip, and speak_hybrid
+# makes several speak() calls in a row and then hands the readout to a cloud
+# voice. Paying the release per unit put that round trip squarely in the seam
+# between the two voices, where it is silence the listener hears (measured
+# 2026-07-27: ~2s of the ~7s handover gap). A caller that owns the whole
+# readout sets VOICE_READOUT_KEEP_WAKELOCK=1 to hold the lock across its calls
+# and release it once, after the last sound, where nobody is waiting on it.
+_ONDEVICE_WAKELOCK_HELD=""
+
+ondevice_wake_lock() {
+  [ "${_ONDEVICE_WAKELOCK_HELD:-}" = "1" ] && return 0
+  command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock 2>/dev/null
+  # Only remembered as held when someone is keeping it: otherwise the matching
+  # unlock below runs and the flag would be a lie by the next call.
+  [ "${VOICE_READOUT_KEEP_WAKELOCK:-}" = "1" ] && _ONDEVICE_WAKELOCK_HELD=1
+  return 0
+}
+
+ondevice_wake_unlock() {
+  [ "${VOICE_READOUT_KEEP_WAKELOCK:-}" = "1" ] && return 0
+  command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock 2>/dev/null
+  _ONDEVICE_WAKELOCK_HELD=""
+  return 0
+}
+
+# Release a lock that was held across several speak() calls, whatever exit path
+# the holder took. A no-op when nothing is held, so it is safe to call blindly.
+ondevice_wake_unlock_held() {
+  [ "${_ONDEVICE_WAKELOCK_HELD:-}" = "1" ] || return 0
+  _ONDEVICE_WAKELOCK_HELD=""
+  command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock 2>/dev/null
+  return 0
+}
+
 # Marks a response readout as in flight, as "pid:deadline_epoch" (same shape as
 # ONDEVICE_LOCK_FILE above). Exists because termux-media-player is a single
 # global player: starting a notice clip stops whatever is already playing.
@@ -1565,12 +1601,26 @@ _play_media_file() {
 # first chunk — see speak_hybrid, which generates it speculatively while the
 # on-device engine covers the opening. It is moved into chunk 0's place and its
 # generation is skipped, so the handover has no generation wait at all.
+# PLAN (5th arg, optional) is that same caller's pre-built chunk plan, so the
+# handover has no split wait either — see _cloud_prep_ahead and the use below.
 #
 # Returns 0 if it spoke everything (or was stopped mid-way), 1 only if the very
 # first chunk could not be generated, so the caller can fall back to ondevice.
 speak_cloud_chunked() {
-  local backend="$1" text="$2" cap="$3" seed="${4:-}"
+  local backend="$1" text="$2" cap="$3" seed="${4:-}" plan="${5:-}"
   command -v termux-media-player >/dev/null 2>&1 || { log error "${backend}: termux-media-player not found"; return 1; }
+
+  local chunks=() c
+  # PLAN (5th arg, optional): a chunk plan the caller had built ahead of time,
+  # NUL-separated, one chunk per record — see _cloud_prep_ahead. Consumed here
+  # so the split (and the scratch sweep that came with it) is not paid for on
+  # the critical path. It was built from this same TEXT, so using it changes
+  # nothing about what gets spoken; if it is missing or unreadable the split
+  # below runs as usual.
+  if [ -n "$plan" ] && [ -s "$plan" ]; then
+    while IFS= read -r -d '' c; do [ -n "$c" ] && chunks+=("$c"); done < "$plan"
+    rm -f "$plan" 2>/dev/null
+  fi
 
   # Few, large chunks minimise the per-chunk termux-media-player play round-trip
   # (~2–5s each) that is the dominant inter-chunk gap; the first chunk is kept
@@ -1581,21 +1631,21 @@ speak_cloud_chunked() {
   # (killed, device asleep, crash) leaves files nobody will ever reclaim by
   # name. Sweep anything older than an hour — far longer than any readout, so
   # this can never touch a live one's chunks.
-  local _scratch
-  if _scratch="$(_cloud_scratch_dir)"; then
-    find "$_scratch" -maxdepth 1 -name 'vr-*' -type f -mmin +60 -delete 2>/dev/null
+  local chunk_max first_max play_lead _scratch
+  if [ "${#chunks[@]}" -eq 0 ]; then
+    if _scratch="$(_cloud_scratch_dir)"; then
+      find "$_scratch" -maxdepth 1 -name 'vr-*' -type f -mmin +60 -delete 2>/dev/null
+    fi
+    chunk_max="$(get_tuning_num CLOUD_CHUNK_CHARS 200)"
+    first_max="$(get_tuning_num CLOUD_FIRST_CHUNK_CHARS 80)"
+    while IFS= read -r -d '' c; do [ -n "$c" ] && chunks+=("$c"); done \
+      < <(split_into_speech_chunks "$text" "$chunk_max" "$first_max")
   fi
-
-  local chunk_max first_max play_lead chunks=() c
-  chunk_max="$(get_tuning_num CLOUD_CHUNK_CHARS 200)"
-  first_max="$(get_tuning_num CLOUD_FIRST_CHUNK_CHARS 80)"
   # Seconds to issue the next chunk's play before the current one ends, so the
   # next chunk's prepare overlaps this tail (see _play_media_file). 0 disables
   # the overlap. Validate numeric.
   play_lead="$(get_tuning CLOUD_PLAY_LEAD 1.4)"
   case "$play_lead" in ''|*[!0-9.]*) play_lead=1.4 ;; esac
-  while IFS= read -r -d '' c; do [ -n "$c" ] && chunks+=("$c"); done \
-    < <(split_into_speech_chunks "$text" "$chunk_max" "$first_max")
   local n=${#chunks[@]}
   [ "$n" -eq 0 ] && return 1
 
@@ -1759,6 +1809,28 @@ speak_cloud_chunked() {
 # Any other outcome returns 0 — once a unit has been spoken, falling back to
 # "read the whole text again" would repeat the opening aloud.
 
+# _cloud_prep_ahead TEXT PLAN_FILE — do speak_cloud_chunked's setup work before
+# it is called: sweep the scratch dir and split TEXT into its chunk plan, saved
+# NUL-separated to PLAN_FILE. That is ~1-3s of shell work which on the hybrid
+# path would otherwise run *after* the on-device voice has stopped, i.e. inside
+# the handover silence (measured 2026-07-27: ~3s of the ~7s gap). Called from
+# the speculative generator, it happens while the on-device voice is still
+# speaking. Written to a temp name and moved into place, so a half-written plan
+# is never readable by the reader on the other side.
+_cloud_prep_ahead() {
+  local text="$1" plan="$2" scratch
+  if scratch="$(_cloud_scratch_dir)"; then
+    find "$scratch" -maxdepth 1 -name 'vr-*' -type f -mmin +60 -delete 2>/dev/null
+  fi
+  if split_into_speech_chunks "$text" \
+       "$(get_tuning_num CLOUD_CHUNK_CHARS 200)" \
+       "$(get_tuning_num CLOUD_FIRST_CHUNK_CHARS 80)" > "${plan}.tmp" 2>/dev/null; then
+    mv -f "${plan}.tmp" "$plan" 2>/dev/null
+  fi
+  rm -f "${plan}.tmp" 2>/dev/null
+  return 0
+}
+
 # _hyb_spec_launch BACKEND SUFFIX_TEXT BOUNDARY — start generating the audio the
 # cloud pipeline would need first if it took over at BOUNDARY. Prints the PID.
 # The exit status goes to a marker file beside the audio, because the readiness
@@ -1775,7 +1847,16 @@ _hyb_spec_launch() {
   # already finished, which is exactly the wait hybrid exists to remove
   # (measured: the opening began 53s in, after a 45s generation, instead of ~8s).
   (
-    gen_cloud "$backend" "$(_cloud_first_chunk "$suffix_text")" "hyb-$b"
+    # The plan is built first and the chunk to generate is taken from it, so
+    # the seed audio is by construction the same text as chunk 0 of the plan
+    # speak_cloud_chunked will play from — one split instead of two, and no way
+    # for the two to disagree. Falls back to a direct split if the plan could
+    # not be written (read-only scratch, disk full).
+    _cloud_prep_ahead "$suffix_text" "${out}.plan"
+    first=""
+    IFS= read -r -d '' first < "${out}.plan" 2>/dev/null || true
+    [ -n "$first" ] || first="$(_cloud_first_chunk "$suffix_text")"
+    gen_cloud "$backend" "$first" "hyb-$b"
     printf '%s' "$?" > "${out}.rc"
   ) >/dev/null 2>&1 &
   printf '%s' "$!"
@@ -1802,7 +1883,8 @@ _hyb_spec_discard() {
     command -v pkill >/dev/null 2>&1 && pkill -P "$3" 2>/dev/null
     kill "$3" 2>/dev/null
   fi
-  rm -f "$out" "${out}.rc" "${out%.wav}.pcm" "${out%.mp3}-raw.mp3" 2>/dev/null
+  rm -f "$out" "${out}.rc" "${out}.plan" "${out}.plan.tmp" \
+        "${out%.wav}.pcm" "${out%.mp3}-raw.mp3" 2>/dev/null
   return 0
 }
 
@@ -1857,6 +1939,13 @@ speak_hybrid() {
   # generation, short enough not to feel like a hang.
   local wait_cap=30
 
+  # From here on this function owns the readout, several speak() calls plus a
+  # cloud pipeline long. Hold the Termux wake lock across all of it instead of
+  # letting each unit take and release its own: the release is a ~1.9s API
+  # round trip and would otherwise fall between the last on-device unit and the
+  # cloud voice. Every exit below goes through ondevice_wake_unlock_held.
+  VOICE_READOUT_KEEP_WAKELOCK=1
+
   local b=1 i=0 od_chars=0 state
   local -a spec_pid=()
 
@@ -1866,6 +1955,7 @@ speak_hybrid() {
       for (( p = 0; p < n; p++ )); do
         if [ -n "${spec_pid[$p]:-}" ]; then _hyb_spec_discard "$backend" "$p" "${spec_pid[$p]}"; fi
       done
+      VOICE_READOUT_KEEP_WAKELOCK=""; ondevice_wake_unlock_held
       return 0
     fi
 
@@ -1891,7 +1981,8 @@ speak_hybrid() {
           local seed; seed="$(_cloud_audio_path "$backend" "hyb-$b")"
           rm -f "${seed}.rc" 2>/dev/null
           log info "hybrid: handing over to ${backend} at unit ${b}/${n} (${od_chars} chars read ondevice)"
-          if speak_cloud_chunked "$backend" "${suffix[$b]}" "$cap" "$seed"; then
+          if speak_cloud_chunked "$backend" "${suffix[$b]}" "$cap" "$seed" "${seed}.plan"; then
+            VOICE_READOUT_KEEP_WAKELOCK=""; ondevice_wake_unlock_held
             return 0
           fi
           # Seeding means the first chunk is already in hand, so this should be
@@ -1947,6 +2038,7 @@ speak_hybrid() {
       speak "${units[$i]}" "$cap" ""
     i=$(( i + 1 ))
   done
+  VOICE_READOUT_KEEP_WAKELOCK=""; ondevice_wake_unlock_held
   log spoke "hybrid: ${n} units, all ondevice (no cloud handover)"
   return 0
 }
@@ -2095,7 +2187,7 @@ speak() {
         # success (2026-07-20). termux-wake-lock is Termux's own mechanism for
         # telling Android "this is intentional, don't idle/kill it" during
         # exactly this kind of extended background work.
-        command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock 2>/dev/null
+        ondevice_wake_lock
 
         # One long call per readout used to trip the ResultReturner issue
         # above regardless of wake-locking, so speak it as several short
@@ -2133,7 +2225,7 @@ speak() {
           if [ -e "$STOP_SWITCH_FILE" ]; then
             log skip "読み上げ停止中 (stop switch pressed mid-readout, ${chunk_count}/${total_chunks} spoken)"
             rm -f "$ONDEVICE_LOCK_FILE" 2>/dev/null
-            command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock 2>/dev/null
+            ondevice_wake_unlock
             return 0
           fi
           chunk_count=$(( chunk_count + 1 ))
@@ -2197,7 +2289,7 @@ speak() {
               if [ -e "$STOP_SWITCH_FILE" ]; then
                 log skip "読み上げ停止中 (stop switch pressed during backoff)"
                 rm -f "$ONDEVICE_LOCK_FILE" 2>/dev/null
-                command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock 2>/dev/null
+                ondevice_wake_unlock
                 return 0
               fi
               sleep 2
@@ -2226,7 +2318,7 @@ speak() {
           notify_failure
           start_recovery_watcher
         fi
-        command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock 2>/dev/null
+        ondevice_wake_unlock
       elif speak_windows_sapi "$text"; then
         # Not on the phone: fall back to the host's built-in on-device voice.
         # None of the Termux length-ceiling / chunking / wedge-recovery above
