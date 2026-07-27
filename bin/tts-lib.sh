@@ -2347,6 +2347,20 @@ speak() {
         timeout_secs=$(( 10 + bytes / 4 ))
         [ "$timeout_secs" -gt "$cap" ] && timeout_secs="$cap"
 
+        # Instrumentation for the handover pre-play (see _ondevice_speech_secs):
+        # what the duration model predicted, what it actually took, and how long
+        # the engine had been idle beforehand. Measuring this from outside the
+        # plugin turned out to be impossible — a script that waits for the phone
+        # to go idle is itself frozen by Android's doze (measured 2026-07-27: a
+        # 6-minute sleep took 50 minutes of wall time), and every readout of the
+        # conversation warming the engine invalidated the wait. Recording it from
+        # in here instead costs two `date` calls and makes ordinary use the
+        # experiment. Cheap enough to leave on permanently.
+        local _t_start _t_idle
+        _t_start="$(date +%s.%N)"
+        _t_idle="$(awk -v n="$(date +%s)" -v l="$(cat "$ONDEVICE_LASTSPOKE_FILE" 2>/dev/null)" \
+                     'BEGIN{ if (l == "") print "?"; else print n - l }')"
+
         # Recorded so a concurrent invocation's precleanup_stuck_tts can tell
         # this call is still within its expected window rather than stuck.
         printf '%s:%s' "$$" "$(( $(date +%s) + timeout_secs ))" > "$ONDEVICE_LOCK_FILE" 2>/dev/null
@@ -2480,6 +2494,12 @@ speak() {
         # like from the log, so make a partial readout visible on its face.
         if [ "$failed" -eq 0 ] && [ "$chunk_count" -eq "$total_chunks" ]; then
           log spoke "termux-tts-speak (${tts_args[*]}, ${chunk_count}/${total_chunks} chunks, timeout ${timeout_secs}s total budget)"
+          # In a subshell, backgrounded, because this exact point is the handover
+          # seam: on the hybrid path the cloud voice is waiting on the next few
+          # lines, and the date/awk/config reads this line needs are not free —
+          # measured at 19s on a throttled (dozing) device, where they would have
+          # been 19s of silence between the two voices.
+          ( log info "ondevice timing: ${#text} chars, took $(awk "BEGIN{printf \"%.1f\", $(date +%s.%N)-$_t_start}")s, model said $(_ondevice_speech_secs "$text")s, idle before ${_t_idle}s" ) &
           # Mark the engine confirmed-warm so the next readout within the warm
           # window can skip the preflight probe (see the preflight gate above).
           date +%s > "$ONDEVICE_LASTSPOKE_FILE" 2>/dev/null
