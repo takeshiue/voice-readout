@@ -1943,17 +1943,25 @@ _ondevice_speech_secs() {
   awk "BEGIN{r=$rate; if(r<=0)r=8.15; printf \"%.1f\", $start + $chars/r}"
 }
 
-# _ondevice_is_warm — true when the engine spoke successfully recently enough
-# that _ondevice_speech_secs can be trusted. A cold Android TextToSpeech binding
-# costs about 5 extra seconds before the first syllable (measured 2026-07-27:
-# 10.3s for a 10-char line that the warm model puts at 5.3s), and 5 seconds is
-# far more error than the pre-play below can absorb — it would start the cloud
-# voice while the on-device one is still mid-sentence. Deliberately the same
-# signal and window the preflight gate in speak() uses, so "warm" means one
-# thing in this file.
-_ondevice_is_warm() {
+# _ondevice_preplay_safe — true when the engine last spoke recently enough that
+# _ondevice_speech_secs can be trusted to within the pre-play's margin.
+#
+# What makes a long gap dangerous is not the TTS engine going cold: the binding
+# survives (measured 2026-07-27 — after 6 idle minutes with the device kept
+# awake, 8.27s against 8.15s warm, i.e. no penalty at all). It is the PHONE
+# going to sleep. Android's doze freezes background work, and a readout that
+# lands on a deeply-dozing device runs slow even after the wake lock is taken.
+# From the instrumentation in speak(): 17 minutes idle came in +0.8s over the
+# model, 91 minutes idle +9.5s. The second one would have started the cloud
+# voice nine seconds into the on-device sentence.
+#
+# Deliberately NOT WARM_SKIP_WINDOW, which this used to borrow. That window
+# decides whether to skip the preflight probe, and on an engine that wedges as
+# often as this one does, widening it delays noticing a hang. The two questions
+# only looked alike; they trade off against different things.
+_ondevice_preplay_safe() {
   local window last now
-  window="$(get_tuning_num WARM_SKIP_WINDOW 120)"
+  window="$(get_tuning_num HYBRID_PREPLAY_MAX_IDLE 600)"
   [ "$window" -gt 0 ] 2>/dev/null || return 1
   last="$(cat "$ONDEVICE_LASTSPOKE_FILE" 2>/dev/null)"
   [ -n "$last" ] || return 1
@@ -1990,10 +1998,11 @@ _hyb_speak_with_preplay() {
   local backend="$1" b="$2" unit="$3" cap="$4"
   _HYB_PREPLAY_STARTED=""
 
-  # A cold engine takes ~5s longer than the model says, which is exactly the
-  # error that turns a hidden round trip into two voices at once. Cold means no
-  # pre-play and the ordinary seam, which is what we had before this existed.
-  if ! _ondevice_is_warm; then
+  # A phone deep in doze runs the unit seconds slower than the model says, which
+  # is exactly the error that turns a hidden round trip into two voices at once.
+  # Too long a gap means no pre-play and the ordinary seam, which is what we had
+  # before this existed.
+  if ! _ondevice_preplay_safe; then
     VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 \
       speak "$unit" "$cap" ""
     return 0
