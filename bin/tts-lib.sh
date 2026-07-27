@@ -105,6 +105,17 @@ get_tuning_num() {
   esac
 }
 
+# Decimal knobs. Every timing figure in the playback path is fractions of a
+# second, and get_tuning_num is integer-only. Validated with a full-string regex
+# rather than a `case` glob because a glob accepts "1.2.3", which reaches awk as
+# a syntax error and comes back as an empty `sleep` argument.
+get_tuning_dec() {
+  local key="$1" default="$2" val out
+  val="$(get_tuning "$key" "$default")"
+  out="$(awk -v v="$val" 'BEGIN{ if (v ~ /^[0-9]+(\.[0-9]+)?$/) print v }')"
+  if [ -n "$out" ]; then printf '%s' "$out"; else printf '%s' "$default"; fi
+}
+
 LOG_FILE="${PLUGIN_DATA_DIR}/voice-readout.log"
 # This file is appended to indefinitely across sessions with nothing else
 # trimming it, so self-rotate once it grows past a threshold instead of
@@ -1567,12 +1578,23 @@ _audio_duration() {
 # unknown-length fallback) plays fully. We do NOT rm/stop here: with the handoff
 # the file may still be feeding the media service; the caller cleans up once the
 # chunk is safely done.
+#
+# STARTED (4th arg, epoch seconds) says this file's `play` was already issued
+# elsewhere and its audio began at that moment — see the pre-play in
+# speak_hybrid. There is then nothing to start, only the right amount of it left
+# to wait out, so the elapsed time is subtracted from the sleep. Measuring
+# elapsed *after* the duration probe is deliberate: the probe is ~0.4s of
+# ffprobe that has already been eaten out of the playback.
 _play_media_file() {
-  local file="$1" cap="$2" lead="${3:-0}" dur
+  local file="$1" cap="$2" lead="${3:-0}" started="${4:-}" dur elapsed=0
   dur="$(_audio_duration "$file")"
-  termux-media-player play "$file" >/dev/null 2>&1
+  if [ -n "$started" ]; then
+    elapsed="$(awk "BEGIN{e=$(date +%s.%N)-$started; if(e<0)e=0; printf \"%.1f\", e}")"
+  else
+    termux-media-player play "$file" >/dev/null 2>&1
+  fi
   if [ -n "$dur" ]; then
-    sleep "$(awk "BEGIN{d=$dur-$lead; if(d<0)d=0; if(d>$cap)d=$cap; printf \"%.1f\", d}")"
+    sleep "$(awk "BEGIN{d=$dur-$lead-$elapsed; if(d<0)d=0; if(d>$cap)d=$cap; printf \"%.1f\", d}")"
   else
     local waited=0
     while [ "$waited" -lt "$cap" ]; do
@@ -1603,11 +1625,14 @@ _play_media_file() {
 # generation is skipped, so the handover has no generation wait at all.
 # PLAN (5th arg, optional) is that same caller's pre-built chunk plan, so the
 # handover has no split wait either — see _cloud_prep_ahead and the use below.
+# PLAYING (6th arg, optional) is the epoch at which that seed's `play` was
+# already issued and its audio began — the caller started chunk 0 before the
+# handover, so here it is only waited out, never started.
 #
 # Returns 0 if it spoke everything (or was stopped mid-way), 1 only if the very
 # first chunk could not be generated, so the caller can fall back to ondevice.
 speak_cloud_chunked() {
-  local backend="$1" text="$2" cap="$3" seed="${4:-}" plan="${5:-}"
+  local backend="$1" text="$2" cap="$3" seed="${4:-}" plan="${5:-}" playing="${6:-}"
   command -v termux-media-player >/dev/null 2>&1 || { log error "${backend}: termux-media-player not found"; return 1; }
 
   local chunks=() c
@@ -1673,11 +1698,18 @@ speak_cloud_chunked() {
   # A caller that already generated chunk 0 hands the file over here. Moved
   # rather than copied: the deterministic per-chunk name is what the play loop
   # below looks for, and leaving a second copy behind would outlive the readout.
+  # The rename is safe even when the seed is already playing (PLAYING): it is a
+  # same-directory rename, the media service is holding an open descriptor, and
+  # a descriptor does not care what the file is called.
   if [ -n "$seed" ] && [ -s "$seed" ]; then
     local seed_dest; seed_dest="$(_cloud_audio_path "$backend" 0)"
     if [ "$seed" = "$seed_dest" ] || mv -f "$seed" "$seed_dest" 2>/dev/null; then
       gen_done[0]=1
-      log info "${backend} pipeline: chunk 0 pre-generated, skipping its generation"
+      if [ -n "$playing" ]; then
+        log info "${backend} pipeline: chunk 0 pre-generated and already playing"
+      else
+        log info "${backend} pipeline: chunk 0 pre-generated, skipping its generation"
+      fi
     fi
   fi
 
@@ -1750,7 +1782,11 @@ speak_cloud_chunked() {
     # so it plays out fully (lead 0).
     local lead=0
     [ "$i" -lt "$(( n - 1 ))" ] && lead="$play_lead"
-    _play_media_file "$(_cloud_audio_path "$backend" "$i")" "$pcap" "$lead"
+    if [ "$i" -eq 0 ] && [ -n "$playing" ]; then
+      _play_media_file "$(_cloud_audio_path "$backend" "$i")" "$pcap" "$lead" "$playing"
+    else
+      _play_media_file "$(_cloud_audio_path "$backend" "$i")" "$pcap" "$lead"
+    fi
     i=$(( i + 1 ))
   done
   # Cleanup deferred to here: with the lead handoff a chunk can still be feeding
@@ -1888,6 +1924,116 @@ _hyb_spec_discard() {
   return 0
 }
 
+# _ondevice_speech_secs TEXT — how long speak() will take to say TEXT on the
+# Termux engine, as "fixed startup + chars / rate". The two terms are kept apart
+# on purpose. The startup (Termux:API round trip, then the engine's own latency
+# before the first syllable) does not scale with the text, and hybrid units are
+# short — 26-60 chars — so the single ~5.3 chars/sec figure the unit sizing is
+# based on, fitted to one 175-char run, underestimates a unit by several
+# seconds. Both terms are measured; see the defaults and ONDEVICE_START_SECS /
+# ONDEVICE_CHARS_PER_SEC to retune per device.
+# Fitted 2026-07-27 on this device at rate 1.31, four warm runs of 19/37/64/91
+# chars: 4.10s + chars/8.15, residuals within +-0.6s. The nominal ~5.3 chars/sec
+# elsewhere in this file is the same data seen without an intercept, which is
+# why it reads so much slower.
+_ondevice_speech_secs() {
+  local chars=${#1} start rate
+  start="$(get_tuning_dec ONDEVICE_START_SECS 4.1)"
+  rate="$(get_tuning_dec ONDEVICE_CHARS_PER_SEC 8.15)"
+  awk "BEGIN{r=$rate; if(r<=0)r=8.15; printf \"%.1f\", $start + $chars/r}"
+}
+
+# _ondevice_is_warm — true when the engine spoke successfully recently enough
+# that _ondevice_speech_secs can be trusted. A cold Android TextToSpeech binding
+# costs about 5 extra seconds before the first syllable (measured 2026-07-27:
+# 10.3s for a 10-char line that the warm model puts at 5.3s), and 5 seconds is
+# far more error than the pre-play below can absorb — it would start the cloud
+# voice while the on-device one is still mid-sentence. Deliberately the same
+# signal and window the preflight gate in speak() uses, so "warm" means one
+# thing in this file.
+_ondevice_is_warm() {
+  local window last now
+  window="$(get_tuning_num WARM_SKIP_WINDOW 120)"
+  [ "$window" -gt 0 ] 2>/dev/null || return 1
+  last="$(cat "$ONDEVICE_LASTSPOKE_FILE" 2>/dev/null)"
+  [ -n "$last" ] || return 1
+  now="$(date +%s)"
+  [ "$(( now - last ))" -lt "$window" ] 2>/dev/null
+}
+
+# _hyb_speak_with_preplay BACKEND BOUNDARY UNIT CAP — speak UNIT on the on-device
+# engine and, if the cloud candidate for BOUNDARY is ready before that unit
+# ends, issue its `play` while the unit is still being spoken.
+#
+# This is the ondevice->cloud counterpart of the CLOUD_PLAY_LEAD overlap used
+# between cloud chunks, and it exists because `play` costs a ~1.9s Termux:API
+# round trip that cannot be made cheaper: pre-preparing the track and resuming
+# it later buys nothing (measured 2026-07-27 — a resume on an already-prepared
+# track still costs 1.8-2.2s, so the cost is the round trip itself, not
+# MediaPlayer's prepare). The only place to put it where nobody hears it is
+# underneath the on-device voice.
+#
+# termux-tts-speak reports nothing until it returns, so "still speaking" has to
+# be predicted rather than observed: the unit is spoken in the background and
+# the `play` is issued LEAD seconds before its estimated end. The two failure
+# modes are not symmetric. Firing late only leaves the gap that was already
+# there; firing early makes the TTS engine and the media service — independent
+# outputs that will happily run at once — talk over each other. So the default
+# LEAD is deliberately shorter than the round trip it is hiding, which trades a
+# little residual gap for never overlapping on an ordinary unit.
+#
+# Sets _HYB_PREPLAY_STARTED to the epoch the audio began at, empty if no
+# pre-play happened. Nothing is consumed here: the candidate's audio and its .rc
+# marker are left exactly as they were, so the caller's boundary check still
+# sees "ok" and the ordinary handover runs on top of this.
+_hyb_speak_with_preplay() {
+  local backend="$1" b="$2" unit="$3" cap="$4"
+  _HYB_PREPLAY_STARTED=""
+
+  # A cold engine takes ~5s longer than the model says, which is exactly the
+  # error that turns a hidden round trip into two voices at once. Cold means no
+  # pre-play and the ordinary seam, which is what we had before this existed.
+  if ! _ondevice_is_warm; then
+    VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 \
+      speak "$unit" "$cap" ""
+    return 0
+  fi
+
+  local est lead wait_for
+  est="$(_ondevice_speech_secs "$unit")"
+  # Deliberately shorter than the ~1.9s round trip it hides. Two error sources
+  # eat the difference: the model's own +-0.6s residual, and the fact that it
+  # was fitted against termux-tts-speak alone while the sleep starts one moment
+  # earlier, at speak()'s entry — its lock file, tuning lookups and chunking are
+  # a few tenths on top. At 1.0 the cloud voice would still not have overlapped
+  # on any of the four fitted runs, and the leftover gap is ~0.2-1.5s in place
+  # of 3.3s. Raise it toward 1.9 to chase the last of the gap, at the price of
+  # occasionally clipping the on-device voice's last syllable.
+  lead="$(get_tuning_dec HYBRID_PREPLAY_LEAD 1.0)"
+  wait_for="$(awk "BEGIN{d=$est-$lead; if(d<0.5)d=0.5; printf \"%.1f\", d}")"
+
+  VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 \
+    speak "$unit" "$cap" "" &
+  local spid=$!
+
+  sleep "$wait_for"
+
+  # The stop switch is re-read here, not just at the loop's boundary check: this
+  # is the last instant before sound comes out, and a 停止 pressed during the
+  # unit must not be answered by the cloud voice starting up.
+  if [ ! -e "$STOP_SWITCH_FILE" ] && [ "$(_hyb_spec_state "$backend" "$b")" = ok ]; then
+    local seed; seed="$(_cloud_audio_path "$backend" "hyb-$b")"
+    if [ -s "$seed" ]; then
+      termux-media-player play "$seed" >/dev/null 2>&1
+      _HYB_PREPLAY_STARTED="$(date +%s.%N)"
+      log info "hybrid: pre-played cloud chunk 0 under the ondevice voice (unit est ${est}s, lead ${lead}s)"
+    fi
+  fi
+
+  wait "$spid" 2>/dev/null
+  return 0
+}
+
 speak_hybrid() {
   local backend="$1" text="$2" cap="$3"
   command -v termux-tts-speak >/dev/null 2>&1 || return 1
@@ -1944,14 +2090,31 @@ speak_hybrid() {
   # letting each unit take and release its own: the release is a ~1.9s API
   # round trip and would otherwise fall between the last on-device unit and the
   # cloud voice. Every exit below goes through ondevice_wake_unlock_held.
+  #
+  # Taken here rather than being left to the first speak(): units are spoken in
+  # a background subshell now (see _hyb_speak_with_preplay), and a lock acquired
+  # in a subshell would set the "held" flag only in that subshell — the release
+  # at the bottom of this function would then find nothing to release and the
+  # wake lock would leak for the rest of the session. Acquiring in this shell
+  # also means the per-unit speak() calls find the flag already set and skip
+  # their own acquisition, which is what they did before.
   VOICE_READOUT_KEEP_WAKELOCK=1
+  ondevice_wake_lock
 
   local b=1 i=0 od_chars=0 state
   local -a spec_pid=()
+  # Epoch at which a pre-played cloud chunk 0 began sounding; empty when the
+  # last unit did not manage one. Set by _hyb_speak_with_preplay (dynamic scope)
+  # and handed to speak_cloud_chunked so it waits the audio out instead of
+  # starting it a second time.
+  local _HYB_PREPLAY_STARTED=""
 
   while [ "$i" -lt "$n" ]; do
     if [ -e "$STOP_SWITCH_FILE" ]; then
       log skip "読み上げ停止中 (hybrid, ${i}/${n} units spoken)"
+      # A pre-played chunk 0 is already coming out of the speaker, and unlike
+      # the candidates below it cannot be dealt with by deleting a file.
+      [ -n "$_HYB_PREPLAY_STARTED" ] && termux-media-player stop >/dev/null 2>&1
       for (( p = 0; p < n; p++ )); do
         if [ -n "${spec_pid[$p]:-}" ]; then _hyb_spec_discard "$backend" "$p" "${spec_pid[$p]}"; fi
       done
@@ -1981,7 +2144,7 @@ speak_hybrid() {
           local seed; seed="$(_cloud_audio_path "$backend" "hyb-$b")"
           rm -f "${seed}.rc" 2>/dev/null
           log info "hybrid: handing over to ${backend} at unit ${b}/${n} (${od_chars} chars read ondevice)"
-          if speak_cloud_chunked "$backend" "${suffix[$b]}" "$cap" "$seed" "${seed}.plan"; then
+          if speak_cloud_chunked "$backend" "${suffix[$b]}" "$cap" "$seed" "${seed}.plan" "$_HYB_PREPLAY_STARTED"; then
             VOICE_READOUT_KEEP_WAKELOCK=""; ondevice_wake_unlock_held
             return 0
           fi
@@ -2020,8 +2183,17 @@ speak_hybrid() {
       fi
     done
 
-    VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 \
-      speak "${units[$i]}" "$cap" ""
+    # b == i+1 means the boundary check at the top of the NEXT iteration decides
+    # the handover, i.e. this is the last unit before the cloud could take over
+    # — the one worth hiding the play round trip under. Any earlier unit has a
+    # boundary check between it and the cloud, so there is nothing to pre-play.
+    if [ "$b" -eq "$(( i + 1 ))" ] && [ -n "${spec_pid[$b]:-}" ]; then
+      _hyb_speak_with_preplay "$backend" "$b" "${units[$i]}" "$cap"
+    else
+      _HYB_PREPLAY_STARTED=""
+      VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 \
+        speak "${units[$i]}" "$cap" ""
+    fi
     od_chars=$(( od_chars + ${#units[$i]} ))
     i=$(( i + 1 ))
   done
@@ -2311,7 +2483,12 @@ speak() {
           # Mark the engine confirmed-warm so the next readout within the warm
           # window can skip the preflight probe (see the preflight gate above).
           date +%s > "$ONDEVICE_LASTSPOKE_FILE" 2>/dev/null
-          clear_failure_notifications
+          # Backgrounded: it is the tidying-up of a hang that is already over,
+          # and its termux-notification-remove is another ~1.9s Termux:API round
+          # trip. Called synchronously it landed between the last on-device unit
+          # and the cloud voice — measured 2026-07-27, a 3.3s handover seam
+          # became 5.3s on the first readout after a recovery.
+          clear_failure_notifications &
         else
           log error "termux-tts-speak timed out or failed (exit $rc, stopped at chunk ${chunk_count}/${total_chunks})"
           precleanup_stuck_tts
