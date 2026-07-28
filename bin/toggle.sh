@@ -228,7 +228,7 @@ case "$TARGET" in
     # Change with `toggle.sh tune <KEY> <VALUE>` or by editing this file; a
     # VOICE_READOUT_<KEY> env var still overrides for a one-off run.
     add_default ONDEVICE_MAX_CHARS 240
-    add_default TTS_CHUNK_CHARS 100
+    add_default TTS_CHUNK_CHARS 150
     add_default TTS_CHUNK_RETRIES 4
     add_default TTS_RETRY_WAIT_BASE 20
     add_default TTS_RETRY_WAIT 90

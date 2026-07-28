@@ -2824,7 +2824,15 @@ speak() {
         # above regardless of wake-locking, so speak it as several short
         # calls instead — each chunk gets its own timeout scaled the same way
         # the whole text used to.
-        local chunk_max="$(get_tuning_num TTS_CHUNK_CHARS 100)"
+        # 150, not the 100 this was set to while chasing the 2026-07-20 engine
+        # hangs. The ceiling exists because a call running ~80s breaks
+        # Termux:API's result-return channel; 100 characters is 10-20s of speech,
+        # so it was far below what the hazard required, and every extra call
+        # costs a measured 2.7s of engine spin-up BEFORE its first syllable —
+        # silence in the middle of a sentence, which is what a listener reports
+        # as the readout cutting out. A 150-character call was timed on this
+        # device at 9.7s, still nowhere near the 80s that breaks anything.
+        local chunk_max="$(get_tuning_num TTS_CHUNK_CHARS 150)"
         local chunk_retries="$(get_tuning_num TTS_CHUNK_RETRIES 4)"
         # Linear backoff between attempts: base, 2x base, 3x base, capped.
         local retry_wait_base="$(get_tuning_num TTS_RETRY_WAIT_BASE 20)"
