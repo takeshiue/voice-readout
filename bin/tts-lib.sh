@@ -2274,6 +2274,22 @@ _hyb_speak_with_preplay() {
   fi
 
   wait "$spid" 2>/dev/null
+
+  # The one seam nothing measured. speak_cloud_chunked's gap column starts at
+  # chunk 1 — chunk 0 has no predecessor there — so the moment the voices change,
+  # which is the moment a listener actually notices, was the only join in the
+  # readout with no number against it. Negative means the cloud audio was already
+  # sounding when the on-device voice stopped, which is the whole intent.
+  #
+  # Read it as optimistic. The reference point is speak() returning, and that is
+  # at or AFTER the last syllable — the call still has its bookkeeping to do — so
+  # a seam reported as slightly negative can still be a short silence in the
+  # room. It is a lower bound on the gap, which is enough to tell a seam that is
+  # working from one that is seconds wide.
+  if [ -n "$_HYB_PREPLAY_STARTED" ]; then
+    local ended="${EPOCHREALTIME:-$(date +%s.%N)}"
+    ( log info "hybrid: handover seam $(awk "BEGIN{printf \"%+.1f\", $_HYB_PREPLAY_STARTED - $ended}")s" ) &
+  fi
   return 0
 }
 
