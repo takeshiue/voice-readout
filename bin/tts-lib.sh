@@ -2344,9 +2344,24 @@ _hyb_speak_with_preplay() {
   lead="$(get_tuning_dec HYBRID_PREPLAY_LEAD 1.0)"
   wait_for="$(awk "BEGIN{d=$est-$lead; if(d<0.5)d=0.5; printf \"%.1f\", d}")"
 
+  # The estimate covers speech, so it has to be counted from the first syllable,
+  # not from the call: speak() spends seconds on the preflight probe, the wake
+  # lock and the split before anything is audible, and counting those as speech
+  # fired the pre-play that much early — 7s of two voices at once on 2026-07-28.
+  local mark="${PLUGIN_DATA_DIR}/voice-readout-speak-mark"
+  rm -f "$mark" 2>/dev/null
+
   VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 \
-    speak "$unit" "$cap" "" &
+    VOICE_READOUT_SPEAK_MARK_FILE="$mark" speak "$unit" "$cap" "" &
   local spid=$!
+
+  # Nothing is at stake in this loop's granularity — it runs before the voice
+  # starts, not at a seam — and it ends either way, on the mark or on a speak()
+  # that gave up before reaching it.
+  while [ ! -s "$mark" ]; do
+    kill -0 "$spid" 2>/dev/null || break
+    sleep 0.2
+  done
 
   # Whichever finishes first — the estimate, or the voice it was estimating.
   # A timer process rather than a poll loop: polling would have to ask the clock
@@ -2819,6 +2834,17 @@ speak() {
         while IFS= read -r -d '' chunk; do
           [ -n "$chunk" ] && chunks+=("$chunk")
         done < <(split_into_speech_chunks "$text" "$chunk_max")
+
+        # Everything above this line happens before a sound comes out: the
+        # preflight probe, the wake lock (a ~1.9s Termux:API round trip of its
+        # own), the tuning reads, the split. The handover pre-play used to time
+        # itself from speak()'s entry and so counted all of it as speech —
+        # measured 2026-07-28, the cloud voice started SEVEN seconds into the
+        # on-device sentence and the two talked over each other the whole way.
+        # A caller that needs to know when the voice really starts passes a path
+        # here and reads the stamp; nobody else pays anything.
+        [ -n "${VOICE_READOUT_SPEAK_MARK_FILE:-}" ] && \
+          printf '%s' "${EPOCHREALTIME:-$(date +%s.%N)}" > "$VOICE_READOUT_SPEAK_MARK_FILE" 2>/dev/null
 
         local total_chunks="${#chunks[@]}"
         local chunk_count=0 failed=0 rc=0
