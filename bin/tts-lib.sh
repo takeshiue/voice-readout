@@ -1528,14 +1528,54 @@ gen_cloud() {
   # the intermediates the backends build beside the output (gemini's .pcm,
   # elevenlabs' -raw.mp3).
   rm -f "$out" "${out%.wav}.pcm" "${out%.mp3}-raw.mp3" 2>/dev/null
-  case "$backend" in
-    gemini)     gen_gemini "$text" "$out" ;;
-    inworld)    gen_inworld "$text" "$out" ;;
-    elevenlabs) gen_elevenlabs "$text" "$out" ;;
-    *)          return 1 ;;
-  esac || return 1
+  _gen_cloud_once "$backend" "$text" "$out" || return 1
+
+  # A backend can return audio that stops partway through the text — measured
+  # 2026-07-28 on gemini: 184 characters that take 25.2s to read came back as
+  # 16.8s, a third of the sentence simply missing. Nothing about the response
+  # says so; it is a valid, complete, short file, and the pipeline played it and
+  # moved on. The listener hears the readout cut mid-sentence.
+  #
+  # Length is the only signal available without listening to it. Compare against
+  # the reading pace the plugin is already asking every engine for
+  # (READOUT_SPEED, 1.0 = 300 characters a minute) and regenerate once when the
+  # audio comes back far shorter than the text could possibly be read in.
+  # The threshold is deliberately loose: engines run 5-30% faster than the pace
+  # they are asked for, and the two truncated chunks seen so far came in at 59%
+  # and 60% against 79-98% for every healthy one. Erring loose costs one extra
+  # generation; erring tight costs the listener the end of a sentence.
+  local ratio; ratio="$(get_tuning_dec CLOUD_MIN_AUDIO_RATIO 0.65)"
+  if ! _cloud_audio_looks_complete "$out" "${#text}" "$ratio"; then
+    log fallback "${backend}: audio came back short for ${#text} chars, regenerating once"
+    rm -f "$out" "${out%.wav}.pcm" "${out%.mp3}-raw.mp3" 2>/dev/null
+    _gen_cloud_once "$backend" "$text" "$out" || return 1
+  fi
+
   _append_chunk_marker "$out"
   return 0
+}
+
+_gen_cloud_once() {
+  case "$1" in
+    gemini)     gen_gemini "$2" "$3" ;;
+    inworld)    gen_inworld "$2" "$3" ;;
+    elevenlabs) gen_elevenlabs "$2" "$3" ;;
+    *)          return 1 ;;
+  esac
+}
+
+# True unless FILE is far shorter than CHARS characters could be read in. An
+# unreadable duration (no ffprobe, odd container) returns true: this guards
+# against a truncated generation, not against the probe, and a probe that
+# cannot answer must not cost a second API call on every chunk.
+_cloud_audio_looks_complete() {
+  local file="$1" chars="$2" ratio="$3" dur
+  [ "$chars" -gt 0 ] 2>/dev/null || return 0
+  dur="$(_audio_duration "$file")"
+  [ -n "$dur" ] || return 0
+  awk "BEGIN{ speed=$(get_tuning READOUT_SPEED 1.2); if(speed<=0) speed=1.0;
+              expected = $chars / (5.0 * speed);
+              exit !($dur >= expected * $ratio) }"
 }
 
 # The exact text speak_cloud_chunked would generate FIRST for TEXT. Used by the
@@ -2172,6 +2212,9 @@ _hyb_speak_with_preplay() {
   # Too long a gap means no pre-play and the ordinary seam, which is what we had
   # before this existed.
   if ! _ondevice_preplay_safe; then
+    # Backgrounded: this sits immediately before the opening, and the whole
+    # point of the opening is that it starts at once.
+    ( log info "hybrid: no pre-play, engine idle past HYBRID_PREPLAY_MAX_IDLE" ) &
     VOICE_READOUT_TTS_BACKEND=ondevice VOICE_READOUT_NO_CLOUD_FALLBACK=1 \
       speak "$unit" "$cap" ""
     return 0
@@ -2221,6 +2264,13 @@ _hyb_speak_with_preplay() {
         log info "hybrid: ondevice voice ended before its ${est}s estimate, played cloud chunk 0 at once"
       fi
     fi
+  elif [ ! -e "$STOP_SWITCH_FILE" ]; then
+    # Nothing to pre-play: the cloud audio does not exist yet. Said out loud
+    # because it is indistinguishable by ear from the pre-play misfiring, and
+    # both leave the listener the same silence at the handover. It means the
+    # opening was shorter than the backend's first generation — gemini's, at
+    # 6-10s, outruns a 26-char opening every time.
+    ( log info "hybrid: no pre-play, cloud chunk 0 not generated yet when the unit ended" ) &
   fi
 
   wait "$spid" 2>/dev/null
