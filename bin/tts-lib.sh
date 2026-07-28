@@ -166,6 +166,15 @@ get_tuning_dec_for() {  # KEY BACKEND DEFAULT
 # CLOUD_PLAY_LEAD=auto (the default) means learn it. Any number there is the
 # user's decision and is used as-is, with no sampling, like every other "auto"
 # knob in this file.
+# What to use until the learning period finishes. NOT a neutral placeholder: the
+# learning period is several readouts long and the listener hears every one of
+# them, so starting from a value nobody measured would mean shipping a few
+# minutes of worse seams to every new install for no reason. 2.2 is the round
+# trip measured on the development device, and the same order as the 1.8-2.0s
+# measured across all three cloud backends — a better first guess than a smaller
+# number, and wrong in the safe direction if a phone turns out to be quicker,
+# since too small only leaves a short silence while too large clips words.
+CLOUD_PLAY_LEAD_START=2.2
 PLAY_LEAD_FILE="${PLUGIN_DATA_DIR}/voice-readout-play-lead"
 PLAY_LEAD_SAMPLE_FILE="${PLUGIN_DATA_DIR}/voice-readout-play-lead-samples"
 # A notice waiting to be shown in the transcript. Written by whatever wants to
@@ -178,12 +187,12 @@ _cloud_play_lead() {
   local v; v="$(get_tuning CLOUD_PLAY_LEAD auto)"
   case "$v" in
     ''|auto) ;;
-    *[!0-9.]*) printf '1.4' ; return ;;
+    *[!0-9.]*) printf '%s' "$CLOUD_PLAY_LEAD_START" ; return ;;
     *) printf '%s' "$v"; return ;;
   esac
   local c; c="$(cat "$PLAY_LEAD_FILE" 2>/dev/null)"
   case "$c" in
-    ''|*[!0-9.]*) printf '1.4' ;;
+    ''|*[!0-9.]*) printf '%s' "$CLOUD_PLAY_LEAD_START" ;;
     *)            printf '%s' "$c" ;;
   esac
 }
