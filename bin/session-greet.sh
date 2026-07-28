@@ -34,7 +34,20 @@ fi
 
 source "$(dirname "$0")/tts-lib.sh"
 
+# A notice left by something that could not show it itself — announce_user only
+# renders from a hook process whose stdout is still open, and a detached readout
+# worker's is not. Read and cleared here, then folded into this hook's single
+# announce_user call: two JSON objects on one hook's stdout would not be valid
+# hook output. It is shown but never spoken; the spoken text is passed to the
+# worker separately.
+PENDING_NOTICE=""
+if [ -s "$PENDING_NOTICE_FILE" ]; then
+  PENDING_NOTICE="$(cat "$PENDING_NOTICE_FILE" 2>/dev/null)"
+  rm -f "$PENDING_NOTICE_FILE" 2>/dev/null
+fi
+
 if ! is_enabled STARTUP_GREETING; then
+  announce_user "$PENDING_NOTICE"
   log skip "startup greeting disabled via toggle"
   exit 0
 fi
@@ -49,6 +62,7 @@ case "$SOURCE" in
   startup|resume) ;;
   *)
     log skip "startup greeting: source '${SOURCE:-unknown}' is not startup/resume"
+    announce_user "$PENDING_NOTICE"
     exit 0
     ;;
 esac
@@ -59,7 +73,12 @@ log greeting "session ${SOURCE}: ${GREETING}"
 
 # Show the greeting in the transcript, from this fast-returning hook process so
 # it appears immediately (the TTS runs in the detached worker below).
-announce_user "$GREETING"
+if [ -n "$PENDING_NOTICE" ]; then
+  announce_user "${GREETING}
+${PENDING_NOTICE}"
+else
+  announce_user "$GREETING"
+fi
 
 # setsid → own session, so nothing tears the speaker down when this hook exits;
 # fds to /dev/null so its stdout can't leak into Claude's context.

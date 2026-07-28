@@ -272,6 +272,7 @@ rm -rf ~/.voice-readout-tmp/
 | `OVERFLOW_OPENING_CHARS` | 150 | そのパイプラインで先に読む冒頭の文字数（要約の生成時間をこの読み上げで隠す） |
 | `CLOUD_FIRST_CHUNK_CHARS` | 80 | クラウド読み上げの1つ目のチャンク長（短いほど喋り出しが早い） |
 | `CLOUD_SECOND_CHUNK_CHARS` | 120 | クラウド読み上げの2つ目のチャンク長（ここだけ生成が間に合いにくい） |
+| `CLOUD_PLAY_LEAD` | auto | チャンクを何秒早くかぶせるか。`auto` は最初の数回の読み上げで端末を実測して自動で決める（確定時に一度だけ画面に出る。やり直しは「校正をやり直して」） |
 | `CLOUD_CHUNK_CHARS` | 200 | クラウド読み上げの3つ目以降のチャンク長 |
 | `CLOUD_PLAY_LEAD` | 1.4 | 次チャンクを何秒早くかぶせるか（継ぎ目の隙間対策） |
 | `CLOUD_HTTP_TIMEOUT` | 45 | クラウド API 呼び出しのタイムアウト秒 |

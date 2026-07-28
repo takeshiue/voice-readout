@@ -139,6 +139,83 @@ get_tuning_dec_for() {  # KEY BACKEND DEFAULT
   get_tuning_dec "$(_tuning_backend_key "$1" "$2")" "$(get_tuning_dec "$1" "$3")"
 }
 
+# How far ahead of a chunk's end to issue the next chunk's play. What has to be
+# hidden is the termux-media-player round trip plus this loop's own overhead,
+# and that is a property of the PHONE — its Termux:API latency, its CPU, its
+# Android version. A constant here is a number measured on one device and
+# shipped to everyone else's; on this one it is 2.1-3.2s, and neither the person
+# on a slower phone nor the person on a faster one has any way to know that the
+# figure exists, let alone what theirs should be.
+#
+# So it is measured, but as a CALIBRATION rather than a control loop: samples
+# are collected for the first CLOUD_PLAY_LEAD_SAMPLES seams, a value is written
+# once, and nothing is written or recomputed afterwards. Chasing the last
+# measurement forever would be worse than a constant — a single slow moment
+# would set the lead too high and clip the next chunk's last syllable — and a
+# value that never settles is not a property of the phone, which is what this is
+# supposed to be.
+#
+# The statistic is mean MINUS mean absolute deviation, not the mean. The error
+# is not symmetric: too small leaves a short silence at a sentence boundary, too
+# large cuts words off, and the round trip has a hard floor with a long slow
+# tail, so the mean sits above the floor and would clip on every good run. This
+# form also has the right instinct built in — a phone that measures consistently
+# converges on its true cost and the seam disappears; an erratic one widens the
+# deviation and automatically backs off to the safe side.
+#
+# CLOUD_PLAY_LEAD=auto (the default) means learn it. Any number there is the
+# user's decision and is used as-is, with no sampling, like every other "auto"
+# knob in this file.
+PLAY_LEAD_FILE="${PLUGIN_DATA_DIR}/voice-readout-play-lead"
+PLAY_LEAD_SAMPLE_FILE="${PLUGIN_DATA_DIR}/voice-readout-play-lead-samples"
+# A notice waiting to be shown in the transcript. Written by whatever wants to
+# tell the user something, read and cleared by the next SessionStart hook:
+# announce_user only renders from a hook process whose stdout is still open, and
+# a readout worker's is not.
+PENDING_NOTICE_FILE="${PLUGIN_DATA_DIR}/voice-readout-notice"
+
+_cloud_play_lead() {
+  local v; v="$(get_tuning CLOUD_PLAY_LEAD auto)"
+  case "$v" in
+    ''|auto) ;;
+    *[!0-9.]*) printf '1.4' ; return ;;
+    *) printf '%s' "$v"; return ;;
+  esac
+  local c; c="$(cat "$PLAY_LEAD_FILE" 2>/dev/null)"
+  case "$c" in
+    ''|*[!0-9.]*) printf '1.4' ;;
+    *)            printf '%s' "$c" ;;
+  esac
+}
+
+# True while CLOUD_PLAY_LEAD is auto and no calibration has been written yet.
+_cloud_play_lead_learning() {
+  case "$(get_tuning CLOUD_PLAY_LEAD auto)" in ''|auto) ;; *) return 1 ;; esac
+  [ ! -s "$PLAY_LEAD_FILE" ]
+}
+
+# _cloud_play_lead_finish — called after enough samples have been appended.
+_cloud_play_lead_finish() {
+  local want; want="$(get_tuning_num CLOUD_PLAY_LEAD_SAMPLES 24)"
+  local have; have="$(wc -l < "$PLAY_LEAD_SAMPLE_FILE" 2>/dev/null || echo 0)"
+  [ "$have" -ge "$want" ] 2>/dev/null || return 0
+  local value
+  value="$(awk '{ s += $1; v[NR] = $1 }
+                END { if (NR == 0) exit
+                      m = s / NR
+                      for (i = 1; i <= NR; i++) { d = v[i] - m; if (d < 0) d = -d; ad += d }
+                      lead = m - ad / NR
+                      if (lead < 0.5) lead = 0.5
+                      if (lead > 4.0) lead = 4.0
+                      printf "%.1f", lead }' "$PLAY_LEAD_SAMPLE_FILE")"
+  [ -n "$value" ] || return 0
+  printf '%s' "$value" > "$PLAY_LEAD_FILE"
+  rm -f "$PLAY_LEAD_SAMPLE_FILE" 2>/dev/null
+  log info "play lead calibrated to ${value}s from ${have} samples"
+  printf '%s' "ボイスリードアウト：この端末に合わせて継ぎ目の調整が完了しました（${value}秒、${have}回の実測から）。やり直すには「校正をやり直して」。" \
+    > "$PENDING_NOTICE_FILE"
+}
+
 LOG_FILE="${PLUGIN_DATA_DIR}/voice-readout.log"
 # This file is appended to indefinitely across sessions with nothing else
 # trimming it, so self-rotate once it grows past a threshold instead of
@@ -1757,8 +1834,7 @@ speak_cloud_chunked() {
   # Seconds to issue the next chunk's play before the current one ends, so the
   # next chunk's prepare overlaps this tail (see _play_media_file). 0 disables
   # the overlap. Validate numeric.
-  play_lead="$(get_tuning CLOUD_PLAY_LEAD 1.4)"
-  case "$play_lead" in ''|*[!0-9.]*) play_lead=1.4 ;; esac
+  play_lead="$(_cloud_play_lead)"
   local n=${#chunks[@]}
   [ "$n" -eq 0 ] && return 1
 
@@ -1966,6 +2042,20 @@ speak_cloud_chunked() {
         printf "%s;", s
       }
     }')"
+  # One sample per seam: the lead that was used plus the gap it left is the
+  # cost that should have been hidden. Taken here, after the last chunk, so
+  # nothing in the measurement lands between two chunks.
+  if _cloud_play_lead_learning; then
+    for (( k2 = 1; k2 < n; k2++ )); do
+      [ -n "${t_audio[$k2]:-}" ] && [ -n "${t_audio[$(( k2 - 1 ))]:-}" ] && [ -n "${t_dur[$(( k2 - 1 ))]:-}" ] || continue
+      awk -v lead="$play_lead" -v a="${t_audio[$k2]}" \
+          -v pa="${t_audio[$(( k2 - 1 ))]}" -v pd="${t_dur[$(( k2 - 1 ))]}" \
+          'BEGIN{ c = lead + (a - (pa + pd)); if (c > 0 && c < 10) printf "%.2f\n", c }' \
+          >> "$PLAY_LEAD_SAMPLE_FILE"
+    done
+    _cloud_play_lead_finish
+  fi
+
   log spoke "${backend}-tts (pipelined, ${n} chunks)"
   return 0
 }
