@@ -2328,6 +2328,39 @@ speak_hybrid() {
   # the caller speak it the ordinary way instead.
   [ "$n" -le 1 ] && return 1
 
+  # With a minimum opening set, the units inside it become ONE unit. No handover
+  # can happen in that stretch — the first candidate is aimed past it — so
+  # splitting it buys nothing, and every extra call costs a measured 2.7s of
+  # engine spin-up before its first syllable: silence in the middle of the
+  # opening, which a listener hears as the readout cutting out. (Measured
+  # 2026-07-28 on this device: 58 and 54 characters as two calls, 10.9s; the same
+  # 112 characters as one call, 8.2s.) Capped at the on-device ceiling, or the
+  # merged unit would be declined by speak() and silently skipped; and it always
+  # leaves a unit for the cloud. speak() still applies its own TTS_CHUNK_CHARS
+  # split inside the merged unit, so that knob caps how much of this is gained.
+  # Per backend before global: how long an opening is needed is a property of
+  # the engine, not of the user's taste. Elevenlabs has a chunk ready in the time
+  # one unit takes to read and wants no minimum at all; gemini's 6-10s first
+  # generation outruns a short opening every time. One global value would have to
+  # be wrong for one of them.
+  local min_od
+  min_od="$(get_tuning_num "HYBRID_MIN_ONDEVICE_CHARS_$(printf '%s' "$backend" | tr '[:lower:]' '[:upper:]')" \
+              "$(get_tuning_num HYBRID_MIN_ONDEVICE_CHARS 0)")"
+  if [ "$min_od" -gt 0 ]; then
+    local acc=0 m=0 merged=""
+    while [ "$m" -lt "$(( n - 1 ))" ] && [ "$acc" -lt "$min_od" ]; do
+      [ "$m" -eq 0 ] || [ "$(( acc + ${#units[$m]} ))" -le "$omax" ] || break
+      merged="${merged}${units[$m]}"
+      acc=$(( acc + ${#units[$m]} ))
+      m=$(( m + 1 ))
+    done
+    if [ "$m" -gt 1 ]; then
+      units=("$merged" "${units[@]:$m}")
+      n=${#units[@]}
+      log info "hybrid: opening merged into one unit (${acc} chars) for HYBRID_MIN_ONDEVICE_CHARS=${min_od}"
+    fi
+  fi
+
   # suffix[j] = everything from unit j to the end, i.e. what the cloud takes
   # over if the handover happens at boundary j. Built by concatenating the units
   # themselves rather than by slicing the original text, so the on-device part
@@ -2369,25 +2402,14 @@ speak_hybrid() {
   # ~2s play round trip lands in the open as silence at the very moment the
   # voices change.
   #
-  # HYBRID_MIN_ONDEVICE_CHARS aims the first candidate at the first boundary
-  # past that many characters instead, so a backend with a slow first chunk gets
-  # a long enough opening BY CONSTRUCTION rather than by retargeting after the
-  # fact. Deliberately a length rather than "gemini hands over at unit 2": what
-  # has to be covered is the backend's first generation, which is a duration,
-  # and units are whatever length the sentences happen to be. Default 0 keeps
-  # the old behaviour; the cost of raising it is more of the readout in the
-  # on-device voice.
+  # HYBRID_MIN_ONDEVICE_CHARS handles this by making the opening one longer
+  # unit (see the merge above), so the first boundary is past it by
+  # construction and this stays at 1. Deliberately a length rather than "gemini
+  # hands over at unit 2": what has to be covered is the backend's first
+  # generation, which is a duration, and units are whatever length the sentences
+  # happen to be. Default 0 keeps the old behaviour; the cost of raising it is
+  # more of the readout in the on-device voice.
   local b=1 i=0 od_chars=0 state
-  local min_od; min_od="$(get_tuning_num HYBRID_MIN_ONDEVICE_CHARS 0)"
-  if [ "$min_od" -gt 0 ]; then
-    local acc=0
-    b=0
-    while [ "$b" -lt "$(( n - 1 ))" ] && [ "$acc" -lt "$min_od" ]; do
-      acc=$(( acc + ${#units[$b]} ))
-      b=$(( b + 1 ))
-    done
-    [ "$b" -ge 1 ] || b=1
-  fi
   local -a spec_pid=()
   # Epoch at which a pre-played cloud chunk 0 began sounding; empty when the
   # last unit did not manage one. Set by _hyb_speak_with_preplay (dynamic scope)
