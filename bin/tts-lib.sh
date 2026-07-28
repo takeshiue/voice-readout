@@ -1932,15 +1932,25 @@ _hyb_spec_discard() {
 # based on, fitted to one 175-char run, underestimates a unit by several
 # seconds. Both terms are measured; see the defaults and ONDEVICE_START_SECS /
 # ONDEVICE_CHARS_PER_SEC to retune per device.
-# Fitted 2026-07-27 on this device at rate 1.31, four warm runs of 19/37/64/91
-# chars: 4.10s + chars/8.15, residuals within +-0.6s. The nominal ~5.3 chars/sec
-# elsewhere in this file is the same data seen without an intercept, which is
-# why it reads so much slower.
+# First fitted 2026-07-27 on four warm runs of 19/37/64/91 chars: 4.10s +
+# chars/8.15, residuals within +-0.6s. Refitted 2026-07-28 on the eight in-window
+# samples the instrumentation collected from ordinary use, which came in much
+# slower: 4.0s + chars/5.6. Those four runs were the only thing happening on the
+# phone; a real hybrid unit is spoken while the next cloud chunk is being
+# generated, and the contention shows. The three samples taken mid-readout (idle
+# 3-4s, i.e. with a generator running) ran 2.5-5.6s over the old model, while
+# the ones at the head of a readout sat within a second of it.
+#
+# The defaults below are NOT that mean fit but a line at or above almost every
+# sample (4.6 + chars/5.0). Which side to err on is not symmetric: over-estimate
+# and _hyb_speak_with_preplay simply falls back to the seam it was hiding;
+# under-estimate and the cloud voice talks over the on-device one, which is what
+# 17.1s of speech against an 11.5s estimate did on 2026-07-28.
 _ondevice_speech_secs() {
   local chars=${#1} start rate
-  start="$(get_tuning_dec ONDEVICE_START_SECS 4.1)"
-  rate="$(get_tuning_dec ONDEVICE_CHARS_PER_SEC 8.15)"
-  awk "BEGIN{r=$rate; if(r<=0)r=8.15; printf \"%.1f\", $start + $chars/r}"
+  start="$(get_tuning_dec ONDEVICE_START_SECS 4.6)"
+  rate="$(get_tuning_dec ONDEVICE_CHARS_PER_SEC 5.0)"
+  awk "BEGIN{r=$rate; if(r<=0)r=5.0; printf \"%.1f\", $start + $chars/r}"
 }
 
 # _ondevice_preplay_safe — true when the engine last spoke recently enough that
@@ -1990,6 +2000,13 @@ _ondevice_preplay_safe() {
 # LEAD is deliberately shorter than the round trip it is hiding, which trades a
 # little residual gap for never overlapping on an ordinary unit.
 #
+# That asymmetry is only true if a too-long estimate really does cost nothing,
+# and until 2026-07-28 it did not: the wait was a flat sleep, so an estimate that
+# overshot held the `play` back past the end of the voice and left a seam LONGER
+# than an unassisted handover. The wait now ends on whichever comes first, the
+# estimate or the voice, which is what lets _ondevice_speech_secs be tuned to
+# the safe side of the samples instead of to their middle.
+#
 # Sets _HYB_PREPLAY_STARTED to the epoch the audio began at, empty if no
 # pre-play happened. Nothing is consumed here: the candidate's audio and its .rc
 # marker are left exactly as they were, so the caller's boundary check still
@@ -2011,13 +2028,11 @@ _hyb_speak_with_preplay() {
   local est lead wait_for
   est="$(_ondevice_speech_secs "$unit")"
   # Deliberately shorter than the ~1.9s round trip it hides. Two error sources
-  # eat the difference: the model's own +-0.6s residual, and the fact that it
-  # was fitted against termux-tts-speak alone while the sleep starts one moment
+  # eat the difference: the model's own residual, and the fact that it was
+  # fitted against termux-tts-speak alone while the wait starts one moment
   # earlier, at speak()'s entry — its lock file, tuning lookups and chunking are
-  # a few tenths on top. At 1.0 the cloud voice would still not have overlapped
-  # on any of the four fitted runs, and the leftover gap is ~0.2-1.5s in place
-  # of 3.3s. Raise it toward 1.9 to chase the last of the gap, at the price of
-  # occasionally clipping the on-device voice's last syllable.
+  # a few tenths on top. Raise it toward 1.9 to chase the last of the gap, at
+  # the price of occasionally clipping the on-device voice's last syllable.
   lead="$(get_tuning_dec HYBRID_PREPLAY_LEAD 1.0)"
   wait_for="$(awk "BEGIN{d=$est-$lead; if(d<0.5)d=0.5; printf \"%.1f\", d}")"
 
@@ -2025,7 +2040,16 @@ _hyb_speak_with_preplay() {
     speak "$unit" "$cap" "" &
   local spid=$!
 
-  sleep "$wait_for"
+  # Whichever finishes first — the estimate, or the voice it was estimating.
+  # A timer process rather than a poll loop: polling would have to ask the clock
+  # or count its own sleeps, and on a throttled phone the per-iteration overhead
+  # accumulates into exactly the kind of late fire this is here to avoid.
+  sleep "$wait_for" &
+  local tpid=$!
+  wait -n "$spid" "$tpid" 2>/dev/null
+  kill "$tpid" 2>/dev/null
+  local under=yes
+  kill -0 "$spid" 2>/dev/null || under=no
 
   # The stop switch is re-read here, not just at the loop's boundary check: this
   # is the last instant before sound comes out, and a 停止 pressed during the
@@ -2035,7 +2059,15 @@ _hyb_speak_with_preplay() {
     if [ -s "$seed" ]; then
       termux-media-player play "$seed" >/dev/null 2>&1
       _HYB_PREPLAY_STARTED="$(date +%s.%N)"
-      log info "hybrid: pre-played cloud chunk 0 under the ondevice voice (unit est ${est}s, lead ${lead}s)"
+      if [ "$under" = yes ]; then
+        log info "hybrid: pre-played cloud chunk 0 under the ondevice voice (unit est ${est}s, lead ${lead}s)"
+      else
+        # The estimate overshot. Nothing is hidden, but the play goes out at the
+        # moment the voice stopped, one step earlier than the handover would
+        # have managed on its own — and the log says so, which is the signal
+        # that _ondevice_speech_secs is running long for this device.
+        log info "hybrid: ondevice voice ended before its ${est}s estimate, played cloud chunk 0 at once"
+      fi
     fi
   fi
 

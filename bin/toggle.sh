@@ -53,8 +53,7 @@
 #                ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES
 #                TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT
 #                WARM_SKIP_WINDOW (skip preflight if last readout succeeded
-#                within N sec; 0 disables — also gates the handover pre-play,
-#                which a cold engine's ~5s slower start would misfire)
+#                within N sec; 0 disables)
 #                HYBRID_UNIT_CHARS
 #                HYBRID_MAX_ONDEVICE_CHARS HYBRID_SPECULATION
 #                HYBRID_PREPLAY_LEAD (start the cloud voice this many sec
