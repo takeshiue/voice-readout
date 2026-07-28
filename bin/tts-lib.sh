@@ -132,11 +132,33 @@ get_tuning_dec() {
 _tuning_backend_key() {
   printf '%s_%s' "$1" "$(printf '%s' "$2" | tr '[:lower:]' '[:upper:]')"
 }
+
+# Built-in defaults that differ per engine. Not a convenience: the shipped
+# numbers were all measured on elevenlabs, and almost nobody will be using
+# elevenlabs. Its free tier is ~10 minutes a month and forbids commercial use,
+# so choosing it means choosing to pay; inworld most people have never heard of.
+# Gemini's free tier is what makes a cloud voice reachable at all, which makes it
+# the engine the DEFAULTS have to suit — and gemini is the one they fit worst,
+# generating at 0.8-1.0x playback where elevenlabs manages 0.55x, with a 6-10s
+# first generation. Someone installing this and asking for the free cloud voice
+# would otherwise start with numbers measured on an engine they are not using,
+# with no way to know the numbers exist. Measured 2026-07-28; a per-engine config
+# key still overrides all of it.
+_engine_default() {  # KEY BACKEND — prints a default, or fails if there is none
+  case "$1:$2" in
+    HYBRID_MIN_ONDEVICE_CHARS:gemini) printf '60' ;;   # cover a 6-10s first generation
+    HYBRID_PREGEN_CHUNKS:gemini)      printf '3' ;;    # little slack, so work further ahead
+    CLOUD_SECOND_CHUNK_CHARS:gemini)  printf '200' ;;  # ~6s of fixed TTFB: do not slice it thin
+    *) return 1 ;;
+  esac
+}
 get_tuning_num_for() {  # KEY BACKEND DEFAULT
-  get_tuning_num "$(_tuning_backend_key "$1" "$2")" "$(get_tuning_num "$1" "$3")"
+  local d; d="$(_engine_default "$1" "$2")" || d="$3"
+  get_tuning_num "$(_tuning_backend_key "$1" "$2")" "$(get_tuning_num "$1" "$d")"
 }
 get_tuning_dec_for() {  # KEY BACKEND DEFAULT
-  get_tuning_dec "$(_tuning_backend_key "$1" "$2")" "$(get_tuning_dec "$1" "$3")"
+  local d; d="$(_engine_default "$1" "$2")" || d="$3"
+  get_tuning_dec "$(_tuning_backend_key "$1" "$2")" "$(get_tuning_dec "$1" "$d")"
 }
 
 # How far ahead of a chunk's end to issue the next chunk's play. What has to be
