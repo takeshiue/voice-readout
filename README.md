@@ -271,7 +271,8 @@ rm -rf ~/.voice-readout-tmp/
 | `OVERFLOW_PIPELINE` | off | 長文時に「冒頭を先に読み、裏で全体を要約する」パイプラインの on/off（[design.md](docs/design.md#長文パイプライン冒頭を先に読み裏で要約する)） |
 | `OVERFLOW_OPENING_CHARS` | 150 | そのパイプラインで先に読む冒頭の文字数（要約の生成時間をこの読み上げで隠す） |
 | `CLOUD_FIRST_CHUNK_CHARS` | 80 | クラウド読み上げの1つ目のチャンク長（短いほど喋り出しが早い） |
-| `CLOUD_CHUNK_CHARS` | 200 | クラウド読み上げの2つ目以降のチャンク長 |
+| `CLOUD_SECOND_CHUNK_CHARS` | 120 | クラウド読み上げの2つ目のチャンク長（ここだけ生成が間に合いにくい） |
+| `CLOUD_CHUNK_CHARS` | 200 | クラウド読み上げの3つ目以降のチャンク長 |
 | `CLOUD_PLAY_LEAD` | 1.4 | 次チャンクを何秒早くかぶせるか（継ぎ目の隙間対策） |
 | `CLOUD_HTTP_TIMEOUT` | 45 | クラウド API 呼び出しのタイムアウト秒 |
 | `HYBRID_TTS` | off | フル ハイブリッドの on/off（フル読み上げ＋クラウド音声のときだけ効く） |

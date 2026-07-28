@@ -836,6 +836,15 @@ split_into_speech_chunks() {
   # while later chunks stay large (fewer termux-media-player play round-trips —
   # the dominant inter-chunk gap). Defaults to $max, i.e. uniform chunks.
   local first_max="${3:-$max}"
+  # Optional 4th arg: the same for the SECOND chunk. The first chunk is the only
+  # thing covering the second one's generation, and it is deliberately tiny, so
+  # that one seam has far less room than any other: measured 2026-07-28 on
+  # elevenlabs v3, a 73-char chunk 0 buys 10.8s of playback while a 197-char
+  # chunk 1 takes 17.4s to generate — 1.2s of margin, against 30s+ everywhere
+  # after it. A middle step turns the schedule into 80 -> ~120 -> max, which is
+  # the growing-chunk idea narrowed to the one seam that needs it. Later chunks
+  # do not need it: by then two chunks of playback are covering each generation.
+  local second_max="${4:-$max}"
   local flat
   flat="$(printf '%s' "$text" | tr '\n' ' ')"
 
@@ -886,11 +895,15 @@ split_into_speech_chunks() {
   # termux-tts-speak call.
   local chunk="" p emitted=0 lim
   for p in "${pieces[@]}"; do
-    # First chunk fills only to first_max; every later chunk to max.
-    [ "$emitted" -eq 0 ] && lim="$first_max" || lim="$max"
+    # First chunk fills to first_max, second to second_max, the rest to max.
+    case "$emitted" in
+      0) lim="$first_max" ;;
+      1) lim="$second_max" ;;
+      *) lim="$max" ;;
+    esac
     if [ -n "$chunk" ] && [ $(( ${#chunk} + ${#p} )) -gt "$lim" ]; then
       printf '%s\0' "$chunk"
-      emitted=1
+      emitted=$(( emitted + 1 ))
       chunk="$p"
     else
       chunk="${chunk}${p}"
@@ -1537,7 +1550,8 @@ _cloud_first_chunk() {
   IFS= read -r -d '' c \
     < <(split_into_speech_chunks "$1" \
           "$(get_tuning_num CLOUD_CHUNK_CHARS 200)" \
-          "$(get_tuning_num CLOUD_FIRST_CHUNK_CHARS 80)") || true
+          "$(get_tuning_num CLOUD_FIRST_CHUNK_CHARS 80)" \
+          "$(get_tuning_num CLOUD_SECOND_CHUNK_CHARS 120)") || true
   printf '%s' "$c"
 }
 
@@ -1585,14 +1599,24 @@ _audio_duration() {
 # to wait out, so the elapsed time is subtracted from the sleep. Measuring
 # elapsed *after* the duration probe is deliberate: the probe is ~0.4s of
 # ffprobe that has already been eaten out of the playback.
+#
+# Publishes _PLAY_LAST_DUR and _PLAY_LAST_AUDIO_AT (the moment the audio began:
+# when `play` returned, or STARTED when somebody else issued it) for callers
+# measuring their own seams — speak_cloud_chunked's timing summary is built from
+# these. Published rather than returned because the return value is the play's
+# success, and re-probing the file to get the duration a second time would cost
+# another ~0.4s of ffprobe out of the playback.
 _play_media_file() {
   local file="$1" cap="$2" lead="${3:-0}" started="${4:-}" dur elapsed=0
   dur="$(_audio_duration "$file")"
   if [ -n "$started" ]; then
     elapsed="$(awk "BEGIN{e=$(date +%s.%N)-$started; if(e<0)e=0; printf \"%.1f\", e}")"
+    _PLAY_LAST_AUDIO_AT="$started"
   else
     termux-media-player play "$file" >/dev/null 2>&1
+    _PLAY_LAST_AUDIO_AT="${EPOCHREALTIME:-$(date +%s.%N)}"
   fi
+  _PLAY_LAST_DUR="$dur"
   if [ -n "$dur" ]; then
     sleep "$(awk "BEGIN{d=$dur-$lead-$elapsed; if(d<0)d=0; if(d>$cap)d=$cap; printf \"%.1f\", d}")"
   else
@@ -1656,15 +1680,16 @@ speak_cloud_chunked() {
   # (killed, device asleep, crash) leaves files nobody will ever reclaim by
   # name. Sweep anything older than an hour — far longer than any readout, so
   # this can never touch a live one's chunks.
-  local chunk_max first_max play_lead _scratch
+  local chunk_max first_max second_max play_lead _scratch
   if [ "${#chunks[@]}" -eq 0 ]; then
     if _scratch="$(_cloud_scratch_dir)"; then
       find "$_scratch" -maxdepth 1 -name 'vr-*' -type f -mmin +60 -delete 2>/dev/null
     fi
     chunk_max="$(get_tuning_num CLOUD_CHUNK_CHARS 200)"
     first_max="$(get_tuning_num CLOUD_FIRST_CHUNK_CHARS 80)"
+    second_max="$(get_tuning_num CLOUD_SECOND_CHUNK_CHARS 120)"
     while IFS= read -r -d '' c; do [ -n "$c" ] && chunks+=("$c"); done \
-      < <(split_into_speech_chunks "$text" "$chunk_max" "$first_max")
+      < <(split_into_speech_chunks "$text" "$chunk_max" "$first_max" "$second_max")
   fi
   # Seconds to issue the next chunk's play before the current one ends, so the
   # next chunk's prepare overlaps this tail (see _play_media_file). 0 disables
@@ -1716,12 +1741,28 @@ speak_cloud_chunked() {
   # Seed the buffer: chunk 0 plus PREFETCH chunks ahead, all generating in
   # parallel from the start. Chunk 0's own generation is the only wait the
   # listener sees before the first sound.
+  # Each generator stamps its own completion time. The loop cannot measure this:
+  # it only looks at a chunk once the previous one has nearly played out, so a
+  # generator that finished long before is indistinguishable from one that
+  # finished a moment ago — the wait returns instantly either way. That is the
+  # same shape as the summarizer mis-measurement of 2026-07-23, and the slack at
+  # each seam is precisely what the chunk schedule has to be tuned against.
   local k
   for (( k = 0; k <= prefetch && k < n; k++ )); do
     [ -n "${gen_done[$k]:-}" ] && continue
-    gen_cloud "$backend" "${chunks[$k]}" "$k" &
+    ( gen_cloud "$backend" "${chunks[$k]}" "$k" \
+        && printf '%s' "${EPOCHREALTIME:-$(date +%s.%N)}" > "$(_cloud_audio_path "$backend" "$k").gen" ) &
     gen_pid[$k]=$!
   done
+
+  # Per-chunk timing. Recorded as it happens, but summed and logged only after
+  # the last chunk: the seams are the thing being measured, and a log call at a
+  # seam would be dead air of exactly the kind under investigation (the lesson
+  # from the on-device instrumentation in speak(), where a single log line cost
+  # 19s on a throttled device). EPOCHREALTIME is a bash builtin, so taking a
+  # timestamp here costs no fork at all.
+  local -a t_ready=() t_audio=() t_dur=()
+  local t0="${EPOCHREALTIME:-$(date +%s.%N)}"
 
   local i=0
   while [ "$i" -lt "$n" ]; do
@@ -1769,12 +1810,15 @@ speak_cloud_chunked() {
       return 0
     fi
 
+    t_ready[$i]="${EPOCHREALTIME:-$(date +%s.%N)}"
+
     # Top up the lookahead so the buffer keeps filling while this chunk plays.
     # Generation (network + ffmpeg) and playback (media player) are separate
     # resources, so they don't collide; only one file plays at a time.
     local ahead=$(( i + prefetch ))
     if [ "$ahead" -lt "$n" ] && [ -z "${gen_pid[$ahead]:-}" ]; then
-      gen_cloud "$backend" "${chunks[$ahead]}" "$ahead" &
+      ( gen_cloud "$backend" "${chunks[$ahead]}" "$ahead" \
+          && printf '%s' "${EPOCHREALTIME:-$(date +%s.%N)}" > "$(_cloud_audio_path "$backend" "$ahead").gen" ) &
       gen_pid[$ahead]=$!
     fi
 
@@ -1787,14 +1831,48 @@ speak_cloud_chunked() {
     else
       _play_media_file "$(_cloud_audio_path "$backend" "$i")" "$pcap" "$lead"
     fi
+    t_audio[$i]="${_PLAY_LAST_AUDIO_AT:-}"
+    t_dur[$i]="${_PLAY_LAST_DUR:-}"
     i=$(( i + 1 ))
   done
   # Cleanup deferred to here: with the lead handoff a chunk can still be feeding
   # the media service just after _play_media_file returns, so removing files mid
   # loop could pull one out from under playback. By now the last chunk (lead 0)
   # has played out and all earlier ones are long done.
-  local k
-  for (( k = 0; k < n; k++ )); do rm -f "$(_cloud_audio_path "$backend" "$k")"; done
+  local k f
+  local -a t_gen=()
+  for (( k = 0; k < n; k++ )); do
+    f="$(_cloud_audio_path "$backend" "$k")"
+    [ -r "${f}.gen" ] && t_gen[$k]="$(cat "${f}.gen" 2>/dev/null)"
+    rm -f "$f" "${f}.gen"
+  done
+
+  # gen   = when this chunk's audio finished generating (falls back to when the
+  #         loop picked it up, for a seeded chunk with no generator of its own).
+  # gap   = this chunk's audio started this long after the previous one ended.
+  #         Negative is the CLOUD_PLAY_LEAD overlap working as intended; positive
+  #         is dead air the listener hears.
+  # slack = how long before its play had to go out the audio was ready. This is
+  #         the margin the chunk schedule is tuned against: a seam with a small
+  #         slack is one perturbation away from a gap even while it reads +0.0.
+  local trec="" k2
+  for (( k2 = 0; k2 < n; k2++ )); do
+    trec+="${k2} ${#chunks[$k2]} ${t_ready[$k2]:-0} ${t_audio[$k2]:-0} ${t_dur[$k2]:-0} ${t_gen[$k2]:-0}"$'\n'
+  done
+  log info "${backend} pipeline timing:$(printf '%s' "$trec" | awk -v t0="$t0" -v lead="$play_lead" '
+    { k=$1+0; c[k]=$2; r[k]=$3; a[k]=$4; d[k]=$5; g[k]=$6; last=k }
+    END {
+      for (k = 0; k <= last; k++) {
+        if (a[k]+0 <= 0) continue
+        s = sprintf(" %d:%dc gen%+.1f aud%.1f", k, c[k], (g[k]+0 > 0 ? g[k]-t0 : r[k]-t0), d[k])
+        if (k > 0 && a[k-1]+0 > 0 && d[k-1]+0 > 0) {
+          s = s sprintf(" gap%+.1f", a[k]-(a[k-1]+d[k-1]))
+          # Slack: how long before its play had to go out the audio was ready.
+          if (g[k]+0 > 0) s = s sprintf(" slack%+.1f", (a[k-1]+d[k-1]-lead) - g[k])
+        }
+        printf "%s;", s
+      }
+    }')"
   log spoke "${backend}-tts (pipelined, ${n} chunks)"
   return 0
 }
@@ -1860,7 +1938,8 @@ _cloud_prep_ahead() {
   fi
   if split_into_speech_chunks "$text" \
        "$(get_tuning_num CLOUD_CHUNK_CHARS 200)" \
-       "$(get_tuning_num CLOUD_FIRST_CHUNK_CHARS 80)" > "${plan}.tmp" 2>/dev/null; then
+       "$(get_tuning_num CLOUD_FIRST_CHUNK_CHARS 80)" \
+       "$(get_tuning_num CLOUD_SECOND_CHUNK_CHARS 120)" > "${plan}.tmp" 2>/dev/null; then
     mv -f "${plan}.tmp" "$plan" 2>/dev/null
   fi
   rm -f "${plan}.tmp" 2>/dev/null
