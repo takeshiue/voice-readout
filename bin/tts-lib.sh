@@ -116,6 +116,29 @@ get_tuning_dec() {
   if [ -n "$out" ]; then printf '%s' "$out"; else printf '%s' "$default"; fi
 }
 
+# Per-engine knobs: KEY_<BACKEND> if that is set, otherwise KEY, otherwise the
+# built-in default. The knobs governing chunk sizes and how far ahead to
+# generate are not preferences, they are descriptions of an engine — how fast it
+# generates, how fast it speaks, whether it drops text — and those differ enough
+# between backends that one shared value is guaranteed to be wrong for somebody.
+# Every figure tuned on this device so far was measured on whichever engine
+# happened to be selected that hour, and then applied to all of them: gemini
+# generates roughly twice as slowly as elevenlabs relative to how fast it speaks,
+# so a chunk size that leaves elevenlabs 30s of slack leaves gemini seconds.
+#
+# _num and _dec variants mirror get_tuning_num / get_tuning_dec, and both fall
+# through the same way, so a config with no per-engine keys behaves exactly as
+# it did before.
+_tuning_backend_key() {
+  printf '%s_%s' "$1" "$(printf '%s' "$2" | tr '[:lower:]' '[:upper:]')"
+}
+get_tuning_num_for() {  # KEY BACKEND DEFAULT
+  get_tuning_num "$(_tuning_backend_key "$1" "$2")" "$(get_tuning_num "$1" "$3")"
+}
+get_tuning_dec_for() {  # KEY BACKEND DEFAULT
+  get_tuning_dec "$(_tuning_backend_key "$1" "$2")" "$(get_tuning_dec "$1" "$3")"
+}
+
 LOG_FILE="${PLUGIN_DATA_DIR}/voice-readout.log"
 # This file is appended to indefinitely across sessions with nothing else
 # trimming it, so self-rotate once it grows past a threshold instead of
@@ -1544,7 +1567,7 @@ gen_cloud() {
   # they are asked for, and the two truncated chunks seen so far came in at 59%
   # and 60% against 79-98% for every healthy one. Erring loose costs one extra
   # generation; erring tight costs the listener the end of a sentence.
-  local ratio; ratio="$(get_tuning_dec CLOUD_MIN_AUDIO_RATIO 0.65)"
+  local ratio; ratio="$(get_tuning_dec_for CLOUD_MIN_AUDIO_RATIO "$backend" 0.65)"
   if ! _cloud_audio_looks_complete "$out" "${#text}" "$ratio"; then
     log fallback "${backend}: audio came back short for ${#text} chars, regenerating once"
     rm -f "$out" "${out%.wav}.pcm" "${out%.mp3}-raw.mp3" 2>/dev/null
@@ -1585,13 +1608,13 @@ _cloud_audio_looks_complete() {
 # the same process, so the two splits are identical by construction — if they
 # ever diverged the seed would be audio of the wrong text, which is why this
 # derives the chunk rather than approximating it.
-_cloud_first_chunk() {
+_cloud_first_chunk() {  # TEXT BACKEND
   local c=""
   IFS= read -r -d '' c \
     < <(split_into_speech_chunks "$1" \
-          "$(get_tuning_num CLOUD_CHUNK_CHARS 200)" \
-          "$(get_tuning_num CLOUD_FIRST_CHUNK_CHARS 80)" \
-          "$(get_tuning_num CLOUD_SECOND_CHUNK_CHARS 120)") || true
+          "$(get_tuning_num_for CLOUD_CHUNK_CHARS "$2" 200)" \
+          "$(get_tuning_num_for CLOUD_FIRST_CHUNK_CHARS "$2" 80)" \
+          "$(get_tuning_num_for CLOUD_SECOND_CHUNK_CHARS "$2" 120)") || true
   printf '%s' "$c"
 }
 
@@ -1725,9 +1748,9 @@ speak_cloud_chunked() {
     if _scratch="$(_cloud_scratch_dir)"; then
       find "$_scratch" -maxdepth 1 -name 'vr-*' -type f -mmin +60 -delete 2>/dev/null
     fi
-    chunk_max="$(get_tuning_num CLOUD_CHUNK_CHARS 200)"
-    first_max="$(get_tuning_num CLOUD_FIRST_CHUNK_CHARS 80)"
-    second_max="$(get_tuning_num CLOUD_SECOND_CHUNK_CHARS 120)"
+    chunk_max="$(get_tuning_num_for CLOUD_CHUNK_CHARS "$backend" 200)"
+    first_max="$(get_tuning_num_for CLOUD_FIRST_CHUNK_CHARS "$backend" 80)"
+    second_max="$(get_tuning_num_for CLOUD_SECOND_CHUNK_CHARS "$backend" 120)"
     while IFS= read -r -d '' c; do [ -n "$c" ] && chunks+=("$c"); done \
       < <(split_into_speech_chunks "$text" "$chunk_max" "$first_max" "$second_max")
   fi
@@ -2001,15 +2024,15 @@ speak_cloud_chunked() {
 # the speculative generator, it happens while the on-device voice is still
 # speaking. Written to a temp name and moved into place, so a half-written plan
 # is never readable by the reader on the other side.
-_cloud_prep_ahead() {
-  local text="$1" plan="$2" scratch
+_cloud_prep_ahead() {  # TEXT PLAN_FILE BACKEND
+  local text="$1" plan="$2" backend="${3:-}" scratch
   if scratch="$(_cloud_scratch_dir)"; then
     find "$scratch" -maxdepth 1 -name 'vr-*' -type f -mmin +60 -delete 2>/dev/null
   fi
   if split_into_speech_chunks "$text" \
-       "$(get_tuning_num CLOUD_CHUNK_CHARS 200)" \
-       "$(get_tuning_num CLOUD_FIRST_CHUNK_CHARS 80)" \
-       "$(get_tuning_num CLOUD_SECOND_CHUNK_CHARS 120)" > "${plan}.tmp" 2>/dev/null; then
+       "$(get_tuning_num_for CLOUD_CHUNK_CHARS "$backend" 200)" \
+       "$(get_tuning_num_for CLOUD_FIRST_CHUNK_CHARS "$backend" 80)" \
+       "$(get_tuning_num_for CLOUD_SECOND_CHUNK_CHARS "$backend" 120)" > "${plan}.tmp" 2>/dev/null; then
     mv -f "${plan}.tmp" "$plan" 2>/dev/null
   fi
   rm -f "${plan}.tmp" 2>/dev/null
@@ -2037,7 +2060,7 @@ _hyb_spec_launch() {
     # speak_cloud_chunked will play from — one split instead of two, and no way
     # for the two to disagree. Falls back to a direct split if the plan could
     # not be written (read-only scratch, disk full).
-    _cloud_prep_ahead "$suffix_text" "${out}.plan"
+    _cloud_prep_ahead "$suffix_text" "${out}.plan" "$backend"
     # Everything the on-device opening can pay for gets generated here, not just
     # the seed. What a chunk has to hide its generation behind is the playback of
     # the chunks before it, and the early ones have almost none: chunk 1 had only
@@ -2047,7 +2070,7 @@ _hyb_spec_launch() {
     # Both start at the handover otherwise, so a LONGER opening does not help
     # them: it delays their start by exactly as much. Generating them during the
     # opening does, and that time is free — the listener is being read to.
-    local pregen; pregen="$(get_tuning_num HYBRID_PREGEN_CHUNKS 2)"
+    local pregen; pregen="$(get_tuning_num_for HYBRID_PREGEN_CHUNKS "$backend" 2)"
     first=""
     exec 3< "${out}.plan" 2>/dev/null || true
     IFS= read -r -d '' first <&3 2>/dev/null || true
@@ -2071,7 +2094,7 @@ _hyb_spec_launch() {
       j=$(( j + 1 ))
     done
     exec 3<&- 2>/dev/null || true
-    [ -n "$first" ] || first="$(_cloud_first_chunk "$suffix_text")"
+    [ -n "$first" ] || first="$(_cloud_first_chunk "$suffix_text" "$backend")"
     gen_cloud "$backend" "$first" "hyb-$b"
     printf '%s' "$?" > "${out}.rc"
     wait
@@ -2344,8 +2367,7 @@ speak_hybrid() {
   # generation outruns a short opening every time. One global value would have to
   # be wrong for one of them.
   local min_od
-  min_od="$(get_tuning_num "HYBRID_MIN_ONDEVICE_CHARS_$(printf '%s' "$backend" | tr '[:lower:]' '[:upper:]')" \
-              "$(get_tuning_num HYBRID_MIN_ONDEVICE_CHARS 0)")"
+  min_od="$(get_tuning_num_for HYBRID_MIN_ONDEVICE_CHARS "$backend" 0)"
   if [ "$min_od" -gt 0 ]; then
     local acc=0 m=0 merged=""
     while [ "$m" -lt "$(( n - 1 ))" ] && [ "$acc" -lt "$min_od" ]; do
