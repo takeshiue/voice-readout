@@ -474,6 +474,7 @@ get_tts_backend() {
     gemini) echo gemini ;;
     inworld) echo inworld ;;
     elevenlabs) echo elevenlabs ;;
+    fishaudio) echo fishaudio ;;
     *) echo ondevice ;;
   esac
 }
@@ -520,6 +521,14 @@ get_elevenlabs_api_key() {
     return
   fi
   get_env_value ELEVENLABS_API_KEY
+}
+
+get_fishaudio_api_key() {
+  if [ -n "${VOICE_READOUT_FISHAUDIO_API_KEY:-}" ]; then
+    printf '%s' "$VOICE_READOUT_FISHAUDIO_API_KEY"
+    return
+  fi
+  get_env_value FISHAUDIO_API_KEY
 }
 
 # Opens the Android app-info screen where the 強制停止 button lives. Actually
@@ -802,6 +811,61 @@ OVERFLOW_PIPELINE_BRIDGE="${VOICE_READOUT_OVERFLOW_PIPELINE_BRIDGE:-残りは要
 # code did, which this script has no way of knowing.
 READOUT_CODE_ONLY_NOTICE="${VOICE_READOUT_CODE_ONLY_NOTICE:-コードだけだから、読み上げるところはないよ。}"
 
+# _capture_played_file FILE TAG — mirror an audio file into CAPTURE_DIR as it
+# goes out to the speaker, for screen recordings.
+#
+# Android's internal-audio capture does not hear this plugin. A screen recorder
+# set to "internal audio" picks up the on-device engine (termux-tts-speak hands
+# off to the system TTS app, which is capturable) but records digital silence
+# for everything termux-media-player plays. Measured 2026-07-29 on a hybrid
+# readout: the 122 chars read on-device are in the recording at -16dB, the
+# ElevenLabs remainder — 15s of audio the phone definitely played — is all-zero
+# samples. So a recording of a cloud or hybrid readout loses its voice halfway
+# through, with nothing on screen to say why.
+#
+# Re-recording the voice by hand off the speaker would work and sound like it.
+# This is the cheaper half: the exact file that was played, plus the wall-clock
+# instant it started, so the track can be rebuilt against the video afterwards.
+# Only files pass through here — an on-device unit has no file to copy, but that
+# half is the half the recorder already gets, so between the two the whole
+# readout is recoverable.
+#
+# Call it just AFTER the play returns, not before. The file is still on disk
+# there (every caller cleans up later, once the poll is done), and "play
+# returned" is what this script already treats as the moment audio began —
+# _PLAY_LAST_AUDIO_AT is set from exactly that instant. Timestamping before the
+# call would put every capture ~2s early, which is the whole Termux:API round
+# trip and more than enough to hear as lip-sync drift.
+#
+# Off unless CAPTURE_DIR names a directory. Copies are never cleaned up: this is
+# a recording aid you point at a scratch dir and empty yourself, and silently
+# deleting takes would defeat it. Failures are ignored — a recording aid must
+# never be able to break a readout.
+_capture_played_file() {
+  local file="$1" tag="${2:-}"
+  # Resolved once per process. get_tuning falls through to a grep of the config
+  # file whenever the env var is unset, which is the normal case, and this sits
+  # in the seam path of every chunk — the default must cost nothing after the
+  # first call.
+  if [ -z "${_CAPTURE_DIR_MEMO+set}" ]; then
+    _CAPTURE_DIR_MEMO="$(get_tuning CAPTURE_DIR '')"
+  fi
+  [ -n "$_CAPTURE_DIR_MEMO" ] || return 0
+  [ -s "$file" ] || return 0
+  mkdir -p "$_CAPTURE_DIR_MEMO" 2>/dev/null || return 0
+  local at name
+  at="${EPOCHREALTIME:-$(date +%s.%N)}"
+  # Sortable, collision-free, and carries its own timestamp: two chunks can be
+  # copied inside the same second, and $$ separates concurrent hooks.
+  name="$(date +%Y%m%d-%H%M%S)-$$-${tag:-clip}.${file##*.}"
+  cp "$file" "$_CAPTURE_DIR_MEMO/$name" 2>/dev/null || return 0
+  # Absolute epoch, not an offset from the first capture: the video it gets
+  # aligned to started at some unrelated moment, and the offset is worked out
+  # against that later. Tab-separated so awk can drive the assembly.
+  printf '%s\t%s\t%s\n' "$at" "$name" "$tag" >>"$_CAPTURE_DIR_MEMO/capture.tsv" 2>/dev/null
+  return 0
+}
+
 # Play a pre-rendered fixed-phrase clip (a bundled .wav) through the phone
 # speaker, returning 0 if it played and 1 if the clip is unavailable so the
 # caller can fall back to live TTS of the phrase. These "決まり文句" are
@@ -843,6 +907,7 @@ play_notice_clip() {
     rm -f "$dest"
     return 1
   fi
+  _capture_played_file "$dest" clip
   if [ "$mode" = "nowait" ]; then
     # Leave $dest in place: the media service is still reading it, and the next
     # clip of the same basename just overwrites it. Don't rm mid-playback.
@@ -1068,7 +1133,7 @@ split_into_speech_chunks() {
 #   Response body to OUTFILE, HTTP status code to stdout, curl's exit status
 #   as the return value.
 cloud_post() {
-  local url="$1" auth="$2" payload="$3" out="$4" body esc rc
+  local url="$1" auth="$2" payload="$3" out="$4" extra="${5:-}" body esc esc2 rc
   # Prefer the plugin's own 0700 data dir over a shared /tmp; fall back only if
   # that is somehow unusable, since failing here would silence the readout.
   body="$(mktemp "${PLUGIN_DATA_DIR}/vr-req.XXXXXX" 2>/dev/null \
@@ -1076,6 +1141,11 @@ cloud_post() {
   chmod 600 "$body" 2>/dev/null
   printf '%s' "$payload" > "$body"
   esc="$(printf '%s' "$auth" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  # EXTRA (5th arg, optional) is a second header for vendors that need one
+  # besides the credential — Fish Audio selects its model that way rather than
+  # in the body. It goes through the same --config file as the credential
+  # instead of a plain -H so that neither can be read out of the process list.
+  esc2="$(printf '%s' "$extra" | sed 's/\\/\\\\/g; s/"/\\"/g')"
   curl -sS --max-time "$(get_tuning_num CLOUD_HTTP_TIMEOUT 45)" \
     -X POST "$url" \
     -H 'Content-Type: application/json' \
@@ -1083,6 +1153,7 @@ cloud_post() {
     -o "$out" -w '%{http_code}' \
     --config - <<CURLCFG
 header = "$esc"
+${extra:+header = "$esc2"}
 CURLCFG
   rc=$?
   rm -f "$body"
@@ -1173,6 +1244,7 @@ speak_gemini() {
   rm -f "$pcm_file"
 
   termux-media-player play "$wav_file" >/dev/null 2>&1
+  _capture_played_file "$wav_file" gemini
 
   # termux-media-player is fire-and-forget (the play command returns
   # immediately), so poll `info` until playback stops to know when we're done.
@@ -1266,6 +1338,7 @@ speak_inworld() {
   fi
 
   termux-media-player play "$wav_file" >/dev/null 2>&1
+  _capture_played_file "$wav_file" inworld
 
   local waited=0
   while [ "$waited" -lt "$cap" ]; do
@@ -1364,6 +1437,7 @@ speak_elevenlabs() {
   fi
 
   termux-media-player play "$play_file" >/dev/null 2>&1
+  _capture_played_file "$play_file" elevenlabs
 
   local waited=0
   while [ "$waited" -lt "$cap" ]; do
@@ -1381,6 +1455,163 @@ speak_elevenlabs() {
     return 1
   fi
   log spoke "elevenlabs-tts (model ${model}, voice ${voice}, ${waited}s)"
+  return 0
+}
+
+# Fish Audio TTS. Same shape as the ElevenLabs backend — POST text, get MP3
+# back, hand the file to termux-media-player — with two differences worth
+# knowing before picking it.
+#
+# It has a speed knob in the API (prosody.speed, 0.5-2.0), so unlike ElevenLabs
+# there is no ffmpeg atempo pass afterwards: one less decode of the whole file
+# per chunk, which is time taken straight out of the gap before the voice
+# starts. And the model is chosen with a *header*, not a body field, which is
+# why cloud_post grew a second header argument.
+#
+# The shipped default is the free model, and its terms are the reason this
+# backend is not the default anywhere:
+#   - "Requests may be used to improve model quality." This plugin sends the
+#     text of Claude's replies, which is the user's own work. That is a
+#     disclosure, not a detail, and it belongs in front of anyone installing
+#     this from an article.
+#   - No latency guarantee — "built for experimentation". The seamless-handoff
+#     design rests on generation running faster than playback (~0.55x measured
+#     elsewhere); a best-effort backend is free to break that assumption on any
+#     given day, and the failure shows up as silence at the seams.
+#   - Free access is stated to run through 2026-08-31. Set FISHAUDIO_MODEL to a
+#     paid model (s1, s2-pro, s2.1-pro) to stop depending on that date.
+# See docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech.
+speak_fishaudio() {
+  local text="$1"
+  local cap="$2"
+  local api_key
+  api_key="$(get_fishaudio_api_key)"
+  if [ -z "$api_key" ]; then
+    log error "fishaudio backend selected but no API key set (toggle.sh fishaudio-key <KEY>)"
+    return 1
+  fi
+  if ! command -v termux-media-player >/dev/null 2>&1; then
+    log error "fishaudio backend needs termux-media-player, not found"
+    return 1
+  fi
+
+  local model
+  model="$(sanitize_model "$(get_tuning FISHAUDIO_MODEL "${VOICE_READOUT_FISHAUDIO_MODEL:-s2.1-pro-free}")" s2.1-pro-free)"
+
+  # A voice from the Fish Audio library, or one cloned in the account. Empty
+  # means the model's own default voice, which is the only thing that works
+  # without a trip to the dashboard — so that is the shipped state.
+  local voice="${VOICE_READOUT_FISHAUDIO_VOICE:-$(get_tuning FISHAUDIO_VOICE '')}"
+
+  # READOUT_SPEED times this backend's factor, like every other engine, so one
+  # setting still governs them all. The factor starts at 1.0 because nothing has
+  # been measured against this engine yet — the others (0.83, 1.11, 0.92) were
+  # all arrived at by listening, and this one should be too. The API rejects
+  # anything outside 0.5-2.0, so clamp rather than let a config typo 422 the
+  # request and drop the readout to the fallback.
+  local speed
+  speed="$(resolve_speed FISHAUDIO_SPEED 1.0)"
+  speed="$(awk -v s="$speed" 'BEGIN{ if (s+0 < 0.5) s=0.5; if (s+0 > 2.0) s=2.0; printf "%.2f", s }')"
+
+  local payload
+  # --argjson for the number: quoted, the API reads it as a string and 422s.
+  payload="$(jq -n --arg text "$text" --arg voice "$voice" --argjson speed "$speed" \
+    '{text: $text, format: "mp3", mp3_bitrate: 128, latency: "balanced",
+      prosody: {speed: $speed}}
+     + (if $voice == "" then {} else {reference_id: $voice} end)')"
+
+  local termux_home="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}"
+  local scratch_dir="$termux_home/.voice-readout-tmp"
+  [ -d "$scratch_dir" ] || { mkdir -p "$scratch_dir" 2>/dev/null && chmod 700 "$scratch_dir" 2>/dev/null; }
+  if [ ! -d "$scratch_dir" ]; then
+    log error "fishaudio backend: cannot create $scratch_dir (wrong TERMUX_HOME?)"
+    return 1
+  fi
+  local mp3_file="$scratch_dir/audio-$$.mp3"
+
+  local http_code
+  http_code="$(cloud_post "https://api.fish.audio/v1/tts" \
+                          "Authorization: Bearer ${api_key}" "$payload" "$mp3_file" \
+                          "model: ${model}")"
+
+  if [ "$http_code" != "200" ] || [ ! -s "$mp3_file" ]; then
+    # 402 is the one worth naming: it is what a lapsed free tier or an exhausted
+    # balance looks like, and it is indistinguishable from a bad key otherwise.
+    case "$http_code" in
+      402) log error "fishaudio: payment required (http 402) — free model withdrawn, or balance spent" ;;
+      *)   log error "fishaudio TTS request failed (http ${http_code}): $(head -c 200 "$mp3_file" 2>/dev/null | tr -d '\n')" ;;
+    esac
+    rm -f "$mp3_file"
+    return 1
+  fi
+
+  # Same reason as the ElevenLabs backend: cloud audio arrives at the vendor's
+  # master level, which is not the on-device voice's level, and the player has
+  # no volume flag to even them out with.
+  local gain play_file adj_file
+  gain="$(get_tuning FISHAUDIO_GAIN 1.0)"
+  case "$gain" in ''|*[!0-9.]*) gain=1.0 ;; esac
+  play_file="$mp3_file"
+  if [ -n "$gain" ] && [ "$gain" != "1.0" ] && [ "$gain" != "1" ] && command -v ffmpeg >/dev/null 2>&1; then
+    adj_file="$scratch_dir/audio-$$-adj.mp3"
+    if ffmpeg -y -i "$mp3_file" -af "volume=${gain}" "$adj_file" -loglevel error 2>/dev/null && [ -s "$adj_file" ]; then
+      play_file="$adj_file"
+    else
+      log error "fishaudio gain: ffmpeg failed (gain=${gain}), playing at original volume"
+    fi
+  fi
+
+  termux-media-player play "$play_file" >/dev/null 2>&1
+  _capture_played_file "$play_file" fishaudio
+
+  local waited=0
+  while [ "$waited" -lt "$cap" ]; do
+    sleep 1
+    waited=$(( waited + 1 ))
+    if ! termux-media-player info 2>/dev/null | grep -q 'Status: Playing'; then
+      break
+    fi
+  done
+  termux-media-player stop >/dev/null 2>&1
+  rm -f "$mp3_file" "$play_file"
+
+  if [ "$waited" -ge "$cap" ]; then
+    log error "fishaudio TTS playback exceeded cap (${cap}s)"
+    return 1
+  fi
+  log spoke "fishaudio-tts (model ${model}, voice ${voice:-default}, speed ${speed}, ${waited}s)"
+  return 0
+}
+
+# gen_fishaudio TEXT OUTFILE — produce an MP3 at OUTFILE. No playback.
+# The generation half of speak_fishaudio above, which is what the chunked
+# pipeline actually calls; see _gen_cloud_once. Returns 0/1.
+gen_fishaudio() {
+  local text="$1" out="$2" api_key model voice speed payload http
+  api_key="$(get_fishaudio_api_key)"
+  [ -n "$api_key" ] || { log error "fishaudio: no API key set (toggle.sh fishaudio-key <KEY>)"; return 1; }
+
+  model="$(sanitize_model "$(get_tuning FISHAUDIO_MODEL "${VOICE_READOUT_FISHAUDIO_MODEL:-s2.1-pro-free}")" s2.1-pro-free)"
+  voice="${VOICE_READOUT_FISHAUDIO_VOICE:-$(get_tuning FISHAUDIO_VOICE '')}"
+  speed="$(resolve_speed FISHAUDIO_SPEED 1.0)"
+  speed="$(awk -v s="$speed" 'BEGIN{ if (s+0 < 0.5) s=0.5; if (s+0 > 2.0) s=2.0; printf "%.2f", s }')"
+
+  payload="$(jq -n --arg text "$text" --arg voice "$voice" --argjson speed "$speed" \
+    '{text: $text, format: "mp3", mp3_bitrate: 128, latency: "balanced",
+      prosody: {speed: $speed}}
+     + (if $voice == "" then {} else {reference_id: $voice} end)')"
+
+  http="$(cloud_post "https://api.fish.audio/v1/tts" \
+                     "Authorization: Bearer ${api_key}" "$payload" "$out" \
+                     "model: ${model}")"
+  if [ "$http" != "200" ] || [ ! -s "$out" ]; then
+    case "$http" in
+      402) log error "fishaudio: payment required (http 402) — free model withdrawn, or balance spent" ;;
+      *)   log error "fishaudio gen failed (http ${http}): $(head -c 200 "$out" 2>/dev/null | tr -d '\n')" ;;
+    esac
+    rm -f "$out"
+    return 1
+  fi
   return 0
 }
 
@@ -1491,7 +1722,7 @@ _cloud_scratch_dir() {
 _cloud_audio_path() {
   local d; d="$(_cloud_scratch_dir)" || return 1
   case "$1" in
-    elevenlabs) printf '%s/vr-%s-%s.mp3' "$d" "$VOICE_READOUT_RUN_ID" "$2" ;;
+    elevenlabs|fishaudio) printf '%s/vr-%s-%s.mp3' "$d" "$VOICE_READOUT_RUN_ID" "$2" ;;
     *)          printf '%s/vr-%s-%s.wav' "$d" "$VOICE_READOUT_RUN_ID" "$2" ;;
   esac
 }
@@ -1691,6 +1922,7 @@ _gen_cloud_once() {
     gemini)     gen_gemini "$2" "$3" ;;
     inworld)    gen_inworld "$2" "$3" ;;
     elevenlabs) gen_elevenlabs "$2" "$3" ;;
+    fishaudio)  gen_fishaudio "$2" "$3" ;;
     *)          return 1 ;;
   esac
 }
@@ -1786,6 +2018,7 @@ _play_media_file() {
   else
     termux-media-player play "$file" >/dev/null 2>&1
     _PLAY_LAST_AUDIO_AT="${EPOCHREALTIME:-$(date +%s.%N)}"
+    _capture_played_file "$file" chunk
   fi
   _PLAY_LAST_DUR="$dur"
   if [ -n "$dur" ]; then
@@ -2413,6 +2646,10 @@ _hyb_speak_with_preplay() {
     if [ -s "$seed" ]; then
       termux-media-player play "$seed" >/dev/null 2>&1
       _HYB_PREPLAY_STARTED="$(date +%s.%N)"
+      # Captured here rather than in _play_media_file: that function's
+      # pre-played branch never issues a `play`, so this is the only site that
+      # sees chunk 0 of a hybrid handover go out.
+      _capture_played_file "$seed" hyb-chunk0
       if [ "$under" = yes ]; then
         log info "hybrid: pre-played cloud chunk 0 under the ondevice voice (unit est ${est}s, lead ${lead}s)"
       else
@@ -2699,7 +2936,7 @@ speak() {
   # Empty is allowed and just means "use the global setting".
   local fn="${3:-}"
   case "$(get_tts_backend "$fn")" in
-    gemini|inworld|elevenlabs)
+    gemini|inworld|elevenlabs|fishaudio)
       # All cloud backends go through the chunked, prefetching pipeline (see
       # speak_cloud_chunked). It sentence-splits long text so the first chunk
       # speaks within seconds and the rest generate while earlier chunks play;

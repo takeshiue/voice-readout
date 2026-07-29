@@ -451,6 +451,7 @@ short_backend() {
     gemini)     printf 'gemini' ;;
     inworld)    printf 'inworld' ;;
     elevenlabs) printf '11labs' ;;
+    fishaudio)  printf 'fish' ;;
     *)          printf '%s' "$1" ;;
   esac
 }

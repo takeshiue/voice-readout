@@ -5,14 +5,15 @@
 # Usage: toggle.sh <stop|notification|all|greeting|farewell|overflow-pipeline|hybrid|chunk-marker> <on|off>
 #        toggle.sh mode <summary|full>
 #        toggle.sh speed <0.5-2.0>
-#        toggle.sh backend <ondevice|gemini|inworld|elevenlabs>
-#        toggle.sh backend-<notification|summary|full|file> <ondevice|gemini|inworld|elevenlabs>
+#        toggle.sh backend <ondevice|gemini|inworld|elevenlabs|fishaudio>
+#        toggle.sh backend-<notification|summary|full|file> <ondevice|gemini|inworld|elevenlabs|fishaudio>
 #        toggle.sh tune <KEY> <VALUE>
 #        toggle.sh init
 #        toggle.sh recalibrate
 #        toggle.sh gemini-key <API_KEY|clear>
 #        toggle.sh inworld-key <API_KEY|clear>
 #        toggle.sh elevenlabs-key <API_KEY|clear>
+#        toggle.sh fishaudio-key <API_KEY|clear>
 #   stop         Stop-hook readout (summarizes/reads the final response)
 #   notification Notification-hook readout (permission/idle prompts)
 #   all          stop + notification together (not greeting — that is separate)
@@ -49,6 +50,7 @@
 #                gemini     = Gemini API TTS (needs network + gemini-key set)
 #                inworld    = Inworld Realtime TTS-1.5 Mini (needs network + inworld-key set)
 #                elevenlabs = ElevenLabs eleven_flash_v2_5 (needs network + elevenlabs-key set)
+#                fishaudio  = Fish Audio s2.1-pro-free (needs network + fishaudio-key set)
 #   tune         set a numeric/scalar tuning value in the config file (the
 #                knobs that used to be environment-variable-only). Valid keys:
 #                ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES
@@ -74,6 +76,7 @@
 #   gemini-key      sets/clears the Gemini API key used by the gemini backend
 #   inworld-key     sets/clears the Inworld API key used by the inworld backend
 #   elevenlabs-key  sets/clears the ElevenLabs API key used by the elevenlabs backend
+#   fishaudio-key   sets/clears the Fish Audio API key used by the fishaudio backend
 set -eu
 
 # Same resolution as tts-lib.sh's PLUGIN_DATA_DIR — kept in step with it by
@@ -99,12 +102,13 @@ usage() {
   echo "Usage: $0 <stop|notification|all|greeting|farewell|overflow-pipeline|hybrid|chunk-marker> <on|off>" >&2
   echo "       $0 mode <summary|full>" >&2
   echo "       $0 speed <0.5-2.0>" >&2
-  echo "       $0 backend <ondevice|gemini|inworld|elevenlabs>" >&2
-  echo "       $0 backend-<notification|summary|full|file> <ondevice|gemini|inworld|elevenlabs>" >&2
+  echo "       $0 backend <ondevice|gemini|inworld|elevenlabs|fishaudio>" >&2
+  echo "       $0 backend-<notification|summary|full|file> <ondevice|gemini|inworld|elevenlabs|fishaudio>" >&2
   echo "       $0 tune <KEY> <VALUE>" >&2
   echo "       $0 gemini-key <API_KEY|clear>" >&2
   echo "       $0 inworld-key <API_KEY|clear>" >&2
   echo "       $0 elevenlabs-key <API_KEY|clear>" >&2
+  echo "       $0 fishaudio-key <API_KEY|clear>" >&2
   exit 1
 }
 
@@ -315,7 +319,7 @@ case "$TARGET" in
     set_key READOUT_SPEED "$STATE"
     ;;
   backend|backend-notification|backend-summary|backend-full|backend-file)
-    case "$STATE" in ondevice|gemini|inworld|elevenlabs) ;; *) usage ;; esac
+    case "$STATE" in ondevice|gemini|inworld|elevenlabs|fishaudio) ;; *) usage ;; esac
     if [ "$STATE" = gemini ] && ! has_env_key GEMINI_API_KEY; then
       echo "warning: gemini backend selected but no API key set yet." >&2
       echo "         run: $0 gemini-key <API_KEY>" >&2
@@ -327,6 +331,19 @@ case "$TARGET" in
     if [ "$STATE" = elevenlabs ] && ! has_env_key ELEVENLABS_API_KEY; then
       echo "warning: elevenlabs backend selected but no API key set yet." >&2
       echo "         run: $0 elevenlabs-key <API_KEY>" >&2
+    fi
+    if [ "$STATE" = fishaudio ]; then
+      if ! has_env_key FISHAUDIO_API_KEY; then
+        echo "warning: fishaudio backend selected but no API key set yet." >&2
+        echo "         run: $0 fishaudio-key <API_KEY>" >&2
+      fi
+      # Said once, here, because the default model is the free one and its
+      # terms are not what someone picking a voice would assume.
+      echo "note: the default model (s2.1-pro-free) is free, but Fish Audio may" >&2
+      echo "      use requests to improve their models — and what this plugin" >&2
+      echo "      sends is the text of Claude's replies, i.e. your own work." >&2
+      echo "      Free access is stated to run to 2026-08-31. For neither, set" >&2
+      echo "      a paid model: $0 tune FISHAUDIO_MODEL s2.1-pro" >&2
     fi
     # "backend" sets the shared default; the per-function forms set only their
     # own function, so a user can give, say, notifications a different voice
@@ -369,6 +386,16 @@ case "$TARGET" in
     fi
     exit 0
     ;;
+  fishaudio-key)
+    if [ "$STATE" = clear ]; then
+      clear_env_key FISHAUDIO_API_KEY
+      echo "voice-readout: fishaudio-key -> cleared"
+    else
+      set_env_key FISHAUDIO_API_KEY "$STATE"
+      echo "voice-readout: fishaudio-key -> saved (${#STATE} chars) in $ENV_FILE"
+    fi
+    exit 0
+    ;;
   recalibrate)
     # Throw away what was learned about this phone's play round trip and start
     # the learning period again — for a new device, or when the seams stop
@@ -386,7 +413,7 @@ case "$TARGET" in
     # its chunks should be — while the framework around them stays shared.
     # Validate the base key so a new per-engine knob needs no entry of its own.
     case "$TUNE_KEY" in
-      *_GEMINI|*_INWORLD|*_ELEVENLABS) TUNE_BASE="${TUNE_KEY%_*}" ;;
+      *_GEMINI|*_INWORLD|*_ELEVENLABS|*_FISHAUDIO) TUNE_BASE="${TUNE_KEY%_*}" ;;
       *)                               TUNE_BASE="$TUNE_KEY" ;;
     esac
     case "$TUNE_BASE" in
@@ -394,10 +421,10 @@ case "$TARGET" in
       # numeric. set_key's sed substitution can't carry a '/' in the value, so
       # keep the greeting text slash-free (edit the config file directly for
       # anything unusual).
-      ONDEVICE_MAX_CHARS|TTS_CHUNK_CHARS|TTS_CHUNK_RETRIES|TTS_RETRY_WAIT_BASE|TTS_RETRY_WAIT|PREFLIGHT_TIMEOUT|WARM_SKIP_WINDOW|OVERFLOW_OPENING_CHARS|HYBRID_UNIT_CHARS|HYBRID_MAX_ONDEVICE_CHARS|HYBRID_MIN_ONDEVICE_CHARS|HYBRID_SPECULATION|HYBRID_PREGEN_CHUNKS|HYBRID_PREPLAY_LEAD|HYBRID_PREPLAY_MAX_IDLE|ONDEVICE_START_SECS|ONDEVICE_CHARS_PER_SEC|WATCH_INTERVAL|LOG_MAX_BYTES|TTS_RATE|TTS_PITCH|NOTIFY_COOLDOWN|ELEVENLABS_GAIN|ELEVENLABS_ATEMPO|ELEVENLABS_MODEL|ELEVENLABS_SPEED|GEMINI_MODEL|GEMINI_SPEED|INWORLD_MODEL|INWORLD_SPEAKING_RATE|CLOUD_HTTP_TIMEOUT|CLOUD_MIN_AUDIO_RATIO|CLOUD_CHUNK_CHARS|CLOUD_FIRST_CHUNK_CHARS|CLOUD_SECOND_CHUNK_CHARS|CLOUD_PLAY_LEAD|CLOUD_PLAY_LEAD_SAMPLES|STARTUP_GREETING_TEXT|SESSION_END_GREETING_TEXT) ;;
+      ONDEVICE_MAX_CHARS|TTS_CHUNK_CHARS|TTS_CHUNK_RETRIES|TTS_RETRY_WAIT_BASE|TTS_RETRY_WAIT|PREFLIGHT_TIMEOUT|WARM_SKIP_WINDOW|OVERFLOW_OPENING_CHARS|HYBRID_UNIT_CHARS|HYBRID_MAX_ONDEVICE_CHARS|HYBRID_MIN_ONDEVICE_CHARS|HYBRID_SPECULATION|HYBRID_PREGEN_CHUNKS|HYBRID_PREPLAY_LEAD|HYBRID_PREPLAY_MAX_IDLE|ONDEVICE_START_SECS|ONDEVICE_CHARS_PER_SEC|WATCH_INTERVAL|LOG_MAX_BYTES|TTS_RATE|TTS_PITCH|NOTIFY_COOLDOWN|ELEVENLABS_GAIN|ELEVENLABS_ATEMPO|ELEVENLABS_MODEL|ELEVENLABS_SPEED|GEMINI_MODEL|GEMINI_SPEED|INWORLD_MODEL|INWORLD_SPEAKING_RATE|FISHAUDIO_MODEL|FISHAUDIO_SPEED|FISHAUDIO_GAIN|FISHAUDIO_VOICE|CLOUD_HTTP_TIMEOUT|CLOUD_MIN_AUDIO_RATIO|CLOUD_CHUNK_CHARS|CLOUD_FIRST_CHUNK_CHARS|CLOUD_SECOND_CHUNK_CHARS|CLOUD_PLAY_LEAD|CLOUD_PLAY_LEAD_SAMPLES|STARTUP_GREETING_TEXT|SESSION_END_GREETING_TEXT) ;;
       *)
         echo "unknown tuning key: $TUNE_KEY" >&2
-        echo "valid keys: ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT WARM_SKIP_WINDOW OVERFLOW_OPENING_CHARS HYBRID_UNIT_CHARS HYBRID_MAX_ONDEVICE_CHARS HYBRID_MIN_ONDEVICE_CHARS[_GEMINI|_INWORLD|_ELEVENLABS] HYBRID_SPECULATION HYBRID_PREGEN_CHUNKS HYBRID_PREPLAY_LEAD HYBRID_PREPLAY_MAX_IDLE ONDEVICE_START_SECS ONDEVICE_CHARS_PER_SEC WATCH_INTERVAL LOG_MAX_BYTES TTS_RATE TTS_PITCH NOTIFY_COOLDOWN ELEVENLABS_GAIN ELEVENLABS_ATEMPO ELEVENLABS_MODEL ELEVENLABS_SPEED GEMINI_MODEL GEMINI_SPEED INWORLD_MODEL INWORLD_SPEAKING_RATE CLOUD_HTTP_TIMEOUT CLOUD_MIN_AUDIO_RATIO CLOUD_CHUNK_CHARS CLOUD_FIRST_CHUNK_CHARS CLOUD_SECOND_CHUNK_CHARS CLOUD_PLAY_LEAD CLOUD_PLAY_LEAD_SAMPLES STARTUP_GREETING_TEXT SESSION_END_GREETING_TEXT" >&2
+        echo "valid keys: ONDEVICE_MAX_CHARS TTS_CHUNK_CHARS TTS_CHUNK_RETRIES TTS_RETRY_WAIT_BASE TTS_RETRY_WAIT PREFLIGHT_TIMEOUT WARM_SKIP_WINDOW OVERFLOW_OPENING_CHARS HYBRID_UNIT_CHARS HYBRID_MAX_ONDEVICE_CHARS HYBRID_MIN_ONDEVICE_CHARS[_GEMINI|_INWORLD|_ELEVENLABS] HYBRID_SPECULATION HYBRID_PREGEN_CHUNKS HYBRID_PREPLAY_LEAD HYBRID_PREPLAY_MAX_IDLE ONDEVICE_START_SECS ONDEVICE_CHARS_PER_SEC WATCH_INTERVAL LOG_MAX_BYTES TTS_RATE TTS_PITCH NOTIFY_COOLDOWN ELEVENLABS_GAIN ELEVENLABS_ATEMPO ELEVENLABS_MODEL ELEVENLABS_SPEED GEMINI_MODEL GEMINI_SPEED INWORLD_MODEL INWORLD_SPEAKING_RATE FISHAUDIO_MODEL FISHAUDIO_SPEED FISHAUDIO_GAIN FISHAUDIO_VOICE CLOUD_HTTP_TIMEOUT CLOUD_MIN_AUDIO_RATIO CLOUD_CHUNK_CHARS CLOUD_FIRST_CHUNK_CHARS CLOUD_SECOND_CHUNK_CHARS CLOUD_PLAY_LEAD CLOUD_PLAY_LEAD_SAMPLES STARTUP_GREETING_TEXT SESSION_END_GREETING_TEXT" >&2
         exit 1
         ;;
     esac
