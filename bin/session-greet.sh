@@ -78,7 +78,7 @@ if ! is_enabled STARTUP_GREETING; then
 fi
 
 INPUT_JSON="$(cat)"
-SOURCE="$(printf '%s' "$INPUT_JSON" | jq -r '.source // empty' 2>/dev/null)"
+SOURCE="$(json_get_field "$INPUT_JSON" source)"
 
 # Greet only when a session is actually beginning to be used — a fresh launch
 # (startup) or a resumed one (resume). /clear and post-compact restarts happen

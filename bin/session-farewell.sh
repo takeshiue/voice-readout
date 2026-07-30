@@ -55,7 +55,7 @@ fi
 source "$(dirname "$0")/tts-lib.sh"
 
 INPUT_JSON="$(cat)"
-REASON="$(printf '%s' "$INPUT_JSON" | jq -r '.reason // empty' 2>/dev/null)"
+REASON="$(json_get_field "$INPUT_JSON" reason)"
 
 # Show a farewell line in the transcript (the audio is the fixed clip played by
 # the worker). Same enable + skip-on-'clear' rules as the clip, but evaluated

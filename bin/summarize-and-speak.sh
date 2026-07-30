@@ -21,7 +21,7 @@ if ! is_enabled STOP_READOUT; then
 fi
 
 INPUT_JSON="$(cat)"
-LAST_MSG="$(printf '%s' "$INPUT_JSON" | jq -r '.last_assistant_message // empty' 2>/dev/null)"
+LAST_MSG="$(json_get_field "$INPUT_JSON" last_assistant_message)"
 
 if [ -z "$LAST_MSG" ]; then
   log skip "no last_assistant_message in hook input"

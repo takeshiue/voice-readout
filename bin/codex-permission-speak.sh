@@ -13,8 +13,9 @@ if [ "${1:-}" = "__worker" ]; then
   exit 0
 fi
 
+source "$(dirname "$0")/json-lib.sh"
 INPUT_JSON="$(cat)"
-TOOL_NAME="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_name // empty' 2>/dev/null)"
+TOOL_NAME="$(json_get_field "$INPUT_JSON" tool_name)"
 [ -n "$TOOL_NAME" ] || exit 0
 
 # PermissionRequest is useful only when Codex will actually stop for the
@@ -26,7 +27,7 @@ TOOL_NAME="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_name // empty' 2>/dev/null
 # Recent Codex versions normally do not emit PermissionRequest at all for the
 # two automatic modes. Check defensively nevertheless: it also makes the hook
 # correct if an event is delivered while a mode change is in flight.
-PERMISSION_MODE="$(printf '%s' "$INPUT_JSON" | jq -r '.permission_mode // empty' 2>/dev/null)"
+PERMISSION_MODE="$(json_get_field "$INPUT_JSON" permission_mode)"
 case "$PERMISSION_MODE" in
   dontAsk|bypassPermissions)
     exit 0

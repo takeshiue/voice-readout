@@ -19,7 +19,7 @@ if ! is_enabled NOTIFICATION_READOUT; then
 fi
 
 INPUT_JSON="$(cat)"
-MESSAGE="$(printf '%s' "$INPUT_JSON" | jq -r '.message // empty' 2>/dev/null)"
+MESSAGE="$(json_get_field "$INPUT_JSON" message)"
 
 log notification "$MESSAGE"
 
