@@ -13,6 +13,7 @@ fi
 export VOICE_READOUT_GUARD=1
 
 source "$(dirname "$0")/tts-lib.sh"
+source "$(dirname "$0")/response-text.sh"
 
 if ! is_enabled STOP_READOUT; then
   log skip "stop readout disabled via toggle"
@@ -45,23 +46,10 @@ fi
 # (keep the link text), raw URLs, then markup syntax that reads badly aloud
 # (bold/italic markers, headings, list bullets, blockquotes — mainly matters
 # for full mode, which speaks this text verbatim instead of via Haiku),
-# then collapse whitespace.
-# The fence pattern allows leading whitespace: a code block nested in a list
-# item is indented, and an anchored /^```/ left its contents in the text to be
-# read aloud as prose.
-CLEANED="$(printf '%s' "$LAST_MSG" \
-  | sed -E '/^[[:space:]]*```/,/^[[:space:]]*```/d' \
-  | sed -E 's/`([^`]*)`/\1/g' \
-  | sed -E 's/\[([^]]*)\]\([^)]*\)/\1/g' \
-  | sed -E 's#https?://[^ ]+##g' \
-  | sed -E 's/\*\*([^*]*)\*\*/\1/g; s/__([^_]*)__/\1/g' \
-  | sed -E 's/\*([^*]*)\*/\1/g; s/_([^_]*)_/\1/g' \
-  | sed -E 's/^#+[[:space:]]*//g' \
-  | sed -E 's/^[[:space:]]*[-*+][[:space:]]+//g' \
-  | sed -E 's/^>[[:space:]]*//g' \
-  | tr -s '[:space:]' ' ')"
-
-CLEANED_TRIMMED="$(printf '%s' "$CLEANED" | sed -E 's/^ +| +$//g')"
+# then collapse whitespace. The rules themselves live in response-text.sh
+# because the Codex Stop hook has to normalize text identically; keeping two
+# copies of the pipeline meant a fix to one of them silently missed the other.
+CLEANED_TRIMMED="$(clean_response_for_speech "$LAST_MSG")"
 if [ -z "$CLEANED_TRIMMED" ]; then
   # A response that is only code/URLs. Say so rather than going silent: a
   # listener can't tell silence from a hook that died. Fixed phrase, so the

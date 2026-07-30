@@ -214,11 +214,13 @@ voice-readout/
 ├── bin/
 │   ├── tts-lib.sh              読み上げ・通知・故障検知・TTSバックエンド切替の共通処理
 │   ├── summarize-and-speak.sh  Stop フック本体（要約 or フル読み上げ）
+│   ├── response-text.sh        応答テキストの整形（コードブロック/URL/記法の除去）。Stop フック各種が共有する
 │   ├── notify-speak.sh         Notification フック本体（許可確認・入力待ち）
 │   ├── recovery-watcher.sh     故障後、復旧を自動検知するウォッチャー
 │   ├── toggle.sh               オン/オフ・モード・話速・バックエンド切替の設定変更コマンド
 │   ├── readout-switch.sh       ストップスイッチ（全読み上げを黙らせる独立スイッチ。設定・環境変数を一切経由しない）
-│   ├── session-greet.sh        SessionStart フック本体（起動/再開時に挨拶を1回読み上げ、音が出るかを即確認）
+│   ├── session-start.sh        SessionStart フック本体（常駐通知を先に出し、そのあと挨拶を読み上げる順番の調整役）
+│   ├── session-greet.sh        起動/再開時に挨拶を1回読み上げ、音が出るかを即確認する（session-start.sh から呼ばれる）
 │   ├── session-farewell.sh     SessionEnd フック本体（終了時に挨拶クリップを1回再生）
 │   ├── statusline.sh           コンソール最下部に現在の状態を1行表示（settings.json の statusLine に登録して使う）
 │   ├── speak-text.sh           任意のファイル/標準入力の文章をそのまま読み上げる手動コマンド（フックではない）

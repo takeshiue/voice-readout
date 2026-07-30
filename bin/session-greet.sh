@@ -23,6 +23,31 @@ if [ "${1:-}" = "__worker" ]; then
   # the default backend, and — crucially — if the on-device engine is wedged, its
   # failure path fires notify_failure + start_recovery_watcher, so a silent
   # launch is not silent about *why*.
+  #
+  # Join the same queue as response readouts. Without this, a fast first Codex
+  # response can claim the response marker while this greeting still owns the
+  # on-device TTS lock; speak() then has to skip that response rather than
+  # interrupt the greeting. Queueing makes the response wait and preserves it.
+  # SessionStart posts a persistent Android notification containing the stop
+  # button. Do not race its Termux:API request with the first TTS request:
+  # when both start together, Android may show the stop button only after a
+  # long delay. Waiting is bounded so a broken notification path can never
+  # suppress the greeting indefinitely.
+  notify_pid="${VOICE_READOUT_START_NOTIFY_PID:-}"
+  if [[ "$notify_pid" =~ ^[0-9]+$ ]]; then
+    notify_wait="$(get_tuning_dec START_NOTIFY_WAIT_SECS 8)"
+    notify_deadline="$(awk -v now="$(date +%s)" -v wait="$notify_wait" 'BEGIN { print now + wait }')"
+    while kill -0 "$notify_pid" 2>/dev/null; do
+      [ "$(date +%s)" -ge "${notify_deadline%.*}" ] && {
+        log fallback "start notification still pending after ${notify_wait}s; starting greeting"
+        break
+      }
+      sleep 0.1
+    done
+  fi
+
+  trap readout_speaking_end EXIT
+  readout_speaking_begin || exit 0
   speak "${VOICE_READOUT_GREETING_TEXT:-}" 60
   exit 0
 fi

@@ -1,7 +1,7 @@
 {
   "name": "voice-readout",
   "description": "Claude Codeの応答や許可確認を音声で読み上げる（スマホ向け）。要約/フル読み上げの切替、故障の自動検知・復旧通知に対応",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "author": {
     "name": "uematsu"
   }

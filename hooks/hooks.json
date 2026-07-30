@@ -5,12 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/session-greet.sh",
-            "async": true
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/readout-switch.sh notify",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/session-start.sh",
             "async": true
           },
           {
