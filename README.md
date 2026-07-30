@@ -163,7 +163,10 @@ git clone https://github.com/takeshiue/voice-readout.git
 
 バッテリー最適化でアプリがバックグラウンド終了されるとハングの原因になるため、**Termux:API と Google 音声サービスの両方を「バッテリー使用量→制限なし」に設定しておく**ことを推奨する（設定→アプリ→各アプリ→バッテリー使用量）。
 
-クラウドの声（Gemini / Inworld / ElevenLabs）を使いたい場合は、API キーの登録が要る → [設計ノート](docs/design.md#読み上げエンジンバックエンドの仕組み)。**キーの登録だけはチャットではなくターミナルで行うこと。**
+クラウドの声（Gemini / Inworld / ElevenLabs / Fish Audio）を使いたい場合は、API キーの登録が要る → [設計ノート](docs/design.md#読み上げエンジンバックエンドの仕組み)。**キーの登録だけはチャットではなくターミナルで行うこと。** 登録は2通りある：
+
+- コマンドで1行ずつ設定する：`bash bin/toggle.sh gemini-key <キー>`（他のサービスも同様、`bin/toggle.sh --help` 参照）
+- ファイルを開いて直接貼り付ける：`bash bin/toggle.sh env-template` で雛形ファイルを作成し、表示されたパスをエディタで開いて `=` の後ろに貼り付けて保存する（既存のファイルは上書きしない）
 
 ## 更新のされ方（入れる前に知っておくこと）
 
