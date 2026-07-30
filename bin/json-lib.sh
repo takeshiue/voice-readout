@@ -86,11 +86,12 @@ json_get_field() {
 }
 
 # _json_escape TEXT — minimal JSON string escaping (backslash, double quote,
-# newline/CR/tab) for the one place this plugin builds JSON by hand
-# (announce_user's {systemMessage: ...} in tts-lib.sh) when jq is unavailable.
-# Not a general-purpose escaper — the text here is always this plugin's own
-# Japanese notice strings, never third-party input, so control characters
-# outside these four are not a case worth handling.
+# newline/CR/tab) for the places this plugin builds JSON by hand when jq is
+# unavailable: announce_user's {systemMessage: ...}, and the cloud TTS request
+# bodies in gen_gemini/gen_inworld/gen_elevenlabs/gen_fishaudio (tts-lib.sh),
+# whose "text" field is Claude's own response text — arbitrary in length and
+# punctuation, but never attacker-supplied, so control characters outside
+# these four are not a case worth handling.
 _json_escape() {
   local s="$1"
   s="${s//\\/\\\\}"
@@ -99,4 +100,60 @@ _json_escape() {
   s="${s//$'\r'/\\r}"
   s="${s//$'\t'/\\t}"
   printf '%s' "$s"
+}
+
+# json_get_field_file FILE FIELD — like json_get_field but reads JSON straight
+# from a file rather than a shell string. Used for the cloud TTS backends'
+# response bodies, which carry a base64-encoded audio clip and can run to
+# hundreds of KB — reading json_get_field's string argument would copy that
+# through a bash variable for no reason when jq can just stream the file.
+json_get_field_file() {
+  local file="$1" field="$2"
+  if have_jq; then
+    jq -r --arg f "$field" '.[$f] // empty' "$file" 2>/dev/null
+    return
+  fi
+  local ps; ps="$(_ps_bin)" || return 1
+  local out; out="$(mktemp "${TMPDIR:-/tmp}/voice-readout-json-out.XXXXXX")" || return 1
+  "$ps" -NoProfile -NonInteractive -Command "
+    \$ErrorActionPreference = 'SilentlyContinue'
+    try {
+      \$j = Get-Content -Raw -LiteralPath '$(_win_path "$file")' -Encoding UTF8 | ConvertFrom-Json
+      \$v = \$j.'$field'
+      if (\$null -ne \$v) {
+        \$utf8NoBom = New-Object System.Text.UTF8Encoding \$false
+        [System.IO.File]::WriteAllText('$(_win_path "$out")', [string]\$v, \$utf8NoBom)
+      }
+    } catch {}
+  " 2>/dev/null
+  cat "$out" 2>/dev/null
+  rm -f "$out" 2>/dev/null
+}
+
+# json_get_gemini_audio FILE — the one nested-path read this plugin needs:
+# Gemini's TTS response wraps the audio at
+# .candidates[0].content.parts[0].inlineData.data. json_get_field only reaches
+# top-level fields, so this gets its own function rather than a generic
+# arbitrary-path reader that nothing else would use.
+json_get_gemini_audio() {
+  local file="$1"
+  if have_jq; then
+    jq -r '.candidates[0].content.parts[0].inlineData.data // empty' "$file" 2>/dev/null
+    return
+  fi
+  local ps; ps="$(_ps_bin)" || return 1
+  local out; out="$(mktemp "${TMPDIR:-/tmp}/voice-readout-json-out.XXXXXX")" || return 1
+  "$ps" -NoProfile -NonInteractive -Command "
+    \$ErrorActionPreference = 'SilentlyContinue'
+    try {
+      \$j = Get-Content -Raw -LiteralPath '$(_win_path "$file")' -Encoding UTF8 | ConvertFrom-Json
+      \$v = \$j.candidates[0].content.parts[0].inlineData.data
+      if (\$null -ne \$v) {
+        \$utf8NoBom = New-Object System.Text.UTF8Encoding \$false
+        [System.IO.File]::WriteAllText('$(_win_path "$out")', [string]\$v, \$utf8NoBom)
+      }
+    } catch {}
+  " 2>/dev/null
+  cat "$out" 2>/dev/null
+  rm -f "$out" 2>/dev/null
 }

@@ -877,44 +877,104 @@ _capture_played_file() {
   return 0
 }
 
+# Cross-platform playback primitives. termux-media-player is Termux:API's only
+# path to the phone speaker and stays the sole implementation on Android. Off
+# Android — detected simply by termux-media-player's absence — ffplay (bundled
+# with the ffmpeg this plugin already requires for the cloud backends, so no
+# new dependency to document) plays the same WAV/MP3 files with no GUI window.
+# Both players are fire-and-forget (their "play" returns immediately), so every
+# caller already polls _audio_is_playing / calls _audio_stop rather than
+# blocking on play itself — that shape carries over unchanged; only what is
+# underneath it differs. ffplay exposes no equivalent of `info`, so its
+# "is it still playing" is tracked here as a PID or the ffplay side of this
+# is really just process liveness.
+FFPLAY_PID_FILE="${PLUGIN_DATA_DIR}/voice-readout-ffplay.pid"
+
+_audio_player_available() {
+  command -v termux-media-player >/dev/null 2>&1 || command -v ffplay >/dev/null 2>&1
+}
+
+_audio_play_start() {
+  local file="$1"
+  if command -v termux-media-player >/dev/null 2>&1; then
+    termux-media-player play "$file" >/dev/null 2>&1
+    return
+  fi
+  command -v ffplay >/dev/null 2>&1 || return 1
+  ffplay -nodisp -autoexit -loglevel quiet "$file" >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  printf '%s' "$!" > "$FFPLAY_PID_FILE" 2>/dev/null
+}
+
+_audio_is_playing() {
+  if command -v termux-media-player >/dev/null 2>&1; then
+    termux-media-player info 2>/dev/null | grep -q 'Status: Playing'
+    return
+  fi
+  local pid; pid="$(cat "$FFPLAY_PID_FILE" 2>/dev/null)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+_audio_stop() {
+  if command -v termux-media-player >/dev/null 2>&1; then
+    termux-media-player stop >/dev/null 2>&1
+    return
+  fi
+  local pid; pid="$(cat "$FFPLAY_PID_FILE" 2>/dev/null)"
+  if [ -n "$pid" ]; then
+    kill "$pid" 2>/dev/null
+    # A bare kill only sends the signal — it does not wait for the process (and
+    # the file handle it holds) to actually go away. Every caller rm's the audio
+    # file immediately after calling this, and that raced ffplay's own shutdown
+    # on Windows ("Device or resource busy", observed 2026-07-31). Bounded at
+    # 2s so a wedged ffplay can't hang the caller.
+    local waited=0
+    while [ "$waited" -lt 20 ] && kill -0 "$pid" 2>/dev/null; do
+      sleep 0.1
+      waited=$(( waited + 1 ))
+    done
+  fi
+  rm -f "$FFPLAY_PID_FILE" 2>/dev/null
+}
+
 # Play a pre-rendered fixed-phrase clip (a bundled .wav) through the phone
 # speaker, returning 0 if it played and 1 if the clip is unavailable so the
 # caller can fall back to live TTS of the phrase. These "決まり文句" are
 # rendered once with a good cloud voice and shipped in assets/, so they cost no
 # API call and no engine time at readout.
 #
-# Two constraints mirror speak_gemini(): termux-media-player is the only path to
-# the real speaker (no /dev/snd in this proot), and Termux:API can only open
-# files under $TERMUX_HOME/storage — the bundled asset lives on the proot side,
-# so copy it into the Termux scratch dir first. The stop switch is honoured up
-# front so a fixed cue can't slip through after the user has silenced readout.
-# The optional 2nd arg picks how the clip is timed:
+# Two constraints mirror speak_gemini(): a bundled player is the only path to
+# the real speaker (no /dev/snd in a Termux proot, and no audio device opened
+# directly by this shell on Windows either), and on Termux specifically that
+# player can only open files under $TERMUX_HOME/storage — the bundled asset
+# lives on the proot side, so copy it into the scratch dir first
+# (_cloud_scratch_dir, shared with the cloud backends below). The stop switch
+# is honoured up front so a fixed cue can't slip through after the user has
+# silenced readout. The optional 2nd arg picks how the clip is timed:
 #   wait   (default) — block until the clip finishes, then stop the player, so a
 #          readout that FOLLOWS the clip (the overflow summary, the pipeline
-#          summary) can't talk over it. Costs extra termux-media-player round
-#          trips (info poll + stop), ~2s each.
+#          summary) can't talk over it. Costs extra player round trips (info
+#          poll + stop), ~2s each on Termux.
 #   nowait — the clip is terminal: nothing is spoken after it (a notification
 #          cue, the recovery announce, the session-end farewell). Don't poll and
 #          don't stop — every termux-media-player sub-command is a ~2s Termux:API
 #          round trip, and here they buy nothing. `play` hands the clip to
-#          Android's media service, which finishes it on its own even after this
-#          process exits (verified with the session-end clip). This is what makes
-#          a fixed notification cue sound promptly instead of ~8s later.
+#          the OS media service, which finishes it on its own even after this
+#          process exits (verified with the session-end clip on Termux). This is
+#          what makes a fixed notification cue sound promptly instead of ~8s later.
 play_notice_clip() {
   local clip="$1"
   local mode="${2:-wait}"
   [ -e "$STOP_SWITCH_FILE" ] && return 0
   [ -f "$clip" ] || return 1
-  command -v termux-media-player >/dev/null 2>&1 || return 1
-  local termux_home="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}"
-  local scratch_dir="$termux_home/.voice-readout-tmp"
-  [ -d "$scratch_dir" ] || { mkdir -p "$scratch_dir" 2>/dev/null && chmod 700 "$scratch_dir" 2>/dev/null; } || return 1
+  _audio_player_available || return 1
+  local scratch_dir; scratch_dir="$(_cloud_scratch_dir)" || return 1
   local dest="$scratch_dir/$(basename "$clip")"
   # Same guard as gen_cloud: a fixed name in a shared directory, so clear
   # whatever is at it before copying rather than following a link.
   rm -f "$dest" 2>/dev/null
   cp "$clip" "$dest" 2>/dev/null || return 1
-  if ! termux-media-player play "$dest" >/dev/null 2>&1; then
+  if ! _audio_play_start "$dest"; then
     rm -f "$dest"
     return 1
   fi
@@ -931,9 +991,9 @@ play_notice_clip() {
   while [ "$waited" -lt 15 ]; do
     sleep 1
     waited=$(( waited + 1 ))
-    termux-media-player info 2>/dev/null | grep -q 'Status: Playing' || break
+    _audio_is_playing || break
   done
-  termux-media-player stop >/dev/null 2>&1
+  _audio_stop
   rm -f "$dest"
   log spoke "notice clip ($(basename "$clip"), ${waited}s)"
   return 0
@@ -1197,8 +1257,8 @@ speak_gemini() {
     log error "gemini backend selected but no API key set (toggle.sh gemini-key <KEY>)"
     return 1
   fi
-  if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v termux-media-player >/dev/null 2>&1; then
-    log error "gemini backend needs ffmpeg + termux-media-player, one is missing"
+  if ! command -v ffmpeg >/dev/null 2>&1 || ! _audio_player_available; then
+    log error "gemini backend needs ffmpeg + a player (termux-media-player, or ffplay on Windows), one is missing"
     return 1
   fi
 
@@ -1230,20 +1290,12 @@ speak_gemini() {
   fi
   rm -f "$resp_file"
 
-  # termux-media-player is how Termux:API actually reaches the phone speaker
-  # (it hands the file to Android's own MediaPlayer). ffplay/aplay running
-  # directly in this shell has no audio device (no /dev/snd here — this is a
-  # proot container), so it silently hangs instead of making sound. The file
-  # must also live somewhere Android's Termux:API app can open by path: this
-  # proot's own /tmp isn't bind-mounted into the real Termux filesystem, only
-  # $TERMUX_HOME (and /storage/emulated/0) are — see `mount` output.
-  local termux_home="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}"
-  local scratch_dir="$termux_home/.voice-readout-tmp"
-  [ -d "$scratch_dir" ] || { mkdir -p "$scratch_dir" 2>/dev/null && chmod 700 "$scratch_dir" 2>/dev/null; }
-  if [ ! -d "$scratch_dir" ]; then
-    log error "gemini backend: cannot create $scratch_dir (wrong TERMUX_HOME?)"
-    return 1
-  fi
+  # The file must live somewhere the player can open by path. On Termux that
+  # means $TERMUX_HOME specifically (this proot's own /tmp isn't bind-mounted
+  # into the real Termux filesystem the media player sees); off Termux, ffplay
+  # runs directly in this same shell so any private scratch dir works —
+  # _cloud_scratch_dir picks the right one for whichever player is present.
+  local scratch_dir; scratch_dir="$(_cloud_scratch_dir)" || return 1
   local pcm_file="$scratch_dir/audio-$$.pcm"
   local wav_file="$scratch_dir/audio-$$.wav"
   printf '%s' "$audio_b64" | base64 -d > "$pcm_file" 2>/dev/null
@@ -1254,20 +1306,18 @@ speak_gemini() {
   fi
   rm -f "$pcm_file"
 
-  termux-media-player play "$wav_file" >/dev/null 2>&1
+  _audio_play_start "$wav_file"
   _capture_played_file "$wav_file" gemini
 
-  # termux-media-player is fire-and-forget (the play command returns
-  # immediately), so poll `info` until playback stops to know when we're done.
+  # The player is fire-and-forget (play returns immediately), so poll until
+  # playback stops to know when we're done.
   local waited=0
   while [ "$waited" -lt "$cap" ]; do
     sleep 1
     waited=$(( waited + 1 ))
-    if ! termux-media-player info 2>/dev/null | grep -q 'Status: Playing'; then
-      break
-    fi
+    _audio_is_playing || break
   done
-  termux-media-player stop >/dev/null 2>&1
+  _audio_stop
   rm -f "$wav_file"
 
   if [ "$waited" -ge "$cap" ]; then
@@ -1296,8 +1346,8 @@ speak_inworld() {
     log error "inworld backend selected but no API key set (toggle.sh inworld-key <KEY>)"
     return 1
   fi
-  if ! command -v termux-media-player >/dev/null 2>&1; then
-    log error "inworld backend needs termux-media-player, not found"
+  if ! _audio_player_available; then
+    log error "inworld backend needs a player (termux-media-player, or ffplay on Windows), none found"
     return 1
   fi
 
@@ -1331,15 +1381,9 @@ speak_inworld() {
   fi
   rm -f "$resp_file"
 
-  # Same proot/Termux:API path constraint as the Gemini backend — see the
-  # comment there for why the file must live under $TERMUX_HOME.
-  local termux_home="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}"
-  local scratch_dir="$termux_home/.voice-readout-tmp"
-  [ -d "$scratch_dir" ] || { mkdir -p "$scratch_dir" 2>/dev/null && chmod 700 "$scratch_dir" 2>/dev/null; }
-  if [ ! -d "$scratch_dir" ]; then
-    log error "inworld backend: cannot create $scratch_dir (wrong TERMUX_HOME?)"
-    return 1
-  fi
+  # Same path constraint as the Gemini backend — see _cloud_scratch_dir for why
+  # this differs between Termux and everywhere else.
+  local scratch_dir; scratch_dir="$(_cloud_scratch_dir)" || return 1
   local wav_file="$scratch_dir/audio-$$.wav"
   printf '%s' "$audio_b64" | base64 -d > "$wav_file" 2>/dev/null
   if [ ! -s "$wav_file" ]; then
@@ -1348,18 +1392,16 @@ speak_inworld() {
     return 1
   fi
 
-  termux-media-player play "$wav_file" >/dev/null 2>&1
+  _audio_play_start "$wav_file"
   _capture_played_file "$wav_file" inworld
 
   local waited=0
   while [ "$waited" -lt "$cap" ]; do
     sleep 1
     waited=$(( waited + 1 ))
-    if ! termux-media-player info 2>/dev/null | grep -q 'Status: Playing'; then
-      break
-    fi
+    _audio_is_playing || break
   done
-  termux-media-player stop >/dev/null 2>&1
+  _audio_stop
   rm -f "$wav_file"
 
   if [ "$waited" -ge "$cap" ]; then
@@ -1388,8 +1430,8 @@ speak_elevenlabs() {
     log error "elevenlabs backend selected but no API key set (toggle.sh elevenlabs-key <KEY>)"
     return 1
   fi
-  if ! command -v termux-media-player >/dev/null 2>&1; then
-    log error "elevenlabs backend needs termux-media-player, not found"
+  if ! _audio_player_available; then
+    log error "elevenlabs backend needs a player (termux-media-player, or ffplay on Windows), none found"
     return 1
   fi
 
@@ -1407,13 +1449,7 @@ speak_elevenlabs() {
 
   payload="$(jq -n --arg text "$text" --arg model "$model" '{text: $text, model_id: $model}')"
 
-  local termux_home="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}"
-  local scratch_dir="$termux_home/.voice-readout-tmp"
-  [ -d "$scratch_dir" ] || { mkdir -p "$scratch_dir" 2>/dev/null && chmod 700 "$scratch_dir" 2>/dev/null; }
-  if [ ! -d "$scratch_dir" ]; then
-    log error "elevenlabs backend: cannot create $scratch_dir (wrong TERMUX_HOME?)"
-    return 1
-  fi
+  local scratch_dir; scratch_dir="$(_cloud_scratch_dir)" || return 1
   local mp3_file="$scratch_dir/audio-$$.mp3"
 
   http_code="$(cloud_post "https://api.elevenlabs.io/v1/text-to-speech/${voice}" \
@@ -1447,18 +1483,16 @@ speak_elevenlabs() {
     fi
   fi
 
-  termux-media-player play "$play_file" >/dev/null 2>&1
+  _audio_play_start "$play_file"
   _capture_played_file "$play_file" elevenlabs
 
   local waited=0
   while [ "$waited" -lt "$cap" ]; do
     sleep 1
     waited=$(( waited + 1 ))
-    if ! termux-media-player info 2>/dev/null | grep -q 'Status: Playing'; then
-      break
-    fi
+    _audio_is_playing || break
   done
-  termux-media-player stop >/dev/null 2>&1
+  _audio_stop
   rm -f "$mp3_file" "$play_file"
 
   if [ "$waited" -ge "$cap" ]; then
@@ -1501,8 +1535,8 @@ speak_fishaudio() {
     log error "fishaudio backend selected but no API key set (toggle.sh fishaudio-key <KEY>)"
     return 1
   fi
-  if ! command -v termux-media-player >/dev/null 2>&1; then
-    log error "fishaudio backend needs termux-media-player, not found"
+  if ! _audio_player_available; then
+    log error "fishaudio backend needs a player (termux-media-player, or ffplay on Windows), none found"
     return 1
   fi
 
@@ -1531,13 +1565,7 @@ speak_fishaudio() {
       prosody: {speed: $speed}}
      + (if $voice == "" then {} else {reference_id: $voice} end)')"
 
-  local termux_home="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}"
-  local scratch_dir="$termux_home/.voice-readout-tmp"
-  [ -d "$scratch_dir" ] || { mkdir -p "$scratch_dir" 2>/dev/null && chmod 700 "$scratch_dir" 2>/dev/null; }
-  if [ ! -d "$scratch_dir" ]; then
-    log error "fishaudio backend: cannot create $scratch_dir (wrong TERMUX_HOME?)"
-    return 1
-  fi
+  local scratch_dir; scratch_dir="$(_cloud_scratch_dir)" || return 1
   local mp3_file="$scratch_dir/audio-$$.mp3"
 
   local http_code
@@ -1572,18 +1600,16 @@ speak_fishaudio() {
     fi
   fi
 
-  termux-media-player play "$play_file" >/dev/null 2>&1
+  _audio_play_start "$play_file"
   _capture_played_file "$play_file" fishaudio
 
   local waited=0
   while [ "$waited" -lt "$cap" ]; do
     sleep 1
     waited=$(( waited + 1 ))
-    if ! termux-media-player info 2>/dev/null | grep -q 'Status: Playing'; then
-      break
-    fi
+    _audio_is_playing || break
   done
-  termux-media-player stop >/dev/null 2>&1
+  _audio_stop
   rm -f "$mp3_file" "$play_file"
 
   if [ "$waited" -ge "$cap" ]; then
@@ -1607,10 +1633,18 @@ gen_fishaudio() {
   speed="$(resolve_speed FISHAUDIO_SPEED 1.0)"
   speed="$(awk -v s="$speed" 'BEGIN{ if (s+0 < 0.5) s=0.5; if (s+0 > 2.0) s=2.0; printf "%.2f", s }')"
 
-  payload="$(jq -n --arg text "$text" --arg voice "$voice" --argjson speed "$speed" \
-    '{text: $text, format: "mp3", mp3_bitrate: 128, latency: "balanced",
-      prosody: {speed: $speed}}
-     + (if $voice == "" then {} else {reference_id: $voice} end)')"
+  if have_jq; then
+    payload="$(jq -n --arg text "$text" --arg voice "$voice" --argjson speed "$speed" \
+      '{text: $text, format: "mp3", mp3_bitrate: 128, latency: "balanced",
+        prosody: {speed: $speed}}
+       + (if $voice == "" then {} else {reference_id: $voice} end)')"
+  else
+    # speed is already clamped to 0.5-2.0 above, safe to interpolate as-is.
+    local ref_field=""
+    [ -n "$voice" ] && ref_field=",\"reference_id\":\"$(_json_escape "$voice")\""
+    payload="$(printf '{"text":"%s","format":"mp3","mp3_bitrate":128,"latency":"balanced","prosody":{"speed":%s}%s}' \
+      "$(_json_escape "$text")" "$speed" "$ref_field")"
+  fi
 
   http="$(cloud_post "https://api.fish.audio/v1/tts" \
                      "Authorization: Bearer ${api_key}" "$payload" "$out" \
@@ -1706,10 +1740,21 @@ STOP_SWITCH_FILE="/data/data/com.termux/files/home/.voice-readout-stopped"
 # playback), so the pipeline can generate one chunk while playing another.
 # ---------------------------------------------------------------------------
 
-# Scratch dir both this container and Termux's media player can reach. Echoes
-# the path; non-zero if it can't be created.
+# Scratch dir the player can reach. Echoes the path; non-zero if it can't be
+# created. On Termux this must be $TERMUX_HOME/.voice-readout-tmp specifically
+# — Termux:API can only open files under $TERMUX_HOME/storage, and the
+# generating process is a proot container whose own /tmp is not the same
+# filesystem Termux's media player sees. Off Termux (ffplay, run directly in
+# this same shell) there is no such split: any private directory this process
+# can write to and read back works, so use the plugin's own data directory
+# instead of inventing a path nothing else needs.
 _cloud_scratch_dir() {
-  local d="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}/.voice-readout-tmp"
+  local d
+  if command -v termux-media-player >/dev/null 2>&1; then
+    d="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}/.voice-readout-tmp"
+  else
+    d="${PLUGIN_DATA_DIR}/.voice-readout-tmp"
+  fi
   if [ ! -d "$d" ]; then
     # 0700 on creation: what lands here is the audio of whatever is being read
     # aloud. Termux and this proot share a uid, so the media player can still
@@ -1760,7 +1805,12 @@ gen_gemini() {
   if [ "$speed" != "1.0" ] && [ "$speed" != "1" ]; then
     spoken="Read the following Japanese text aloud naturally, at about ${speed}x the normal speaking pace — noticeably faster and crisper than the default, but still clear. Do not read this instruction."$'\n\n'"${text}"
   fi
-  payload="$(jq -n --arg text "$spoken" --arg voice "$voice" '{contents:[{parts:[{text:$text}]}],generationConfig:{responseModalities:["AUDIO"],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:$voice}}}}}')"
+  if have_jq; then
+    payload="$(jq -n --arg text "$spoken" --arg voice "$voice" '{contents:[{parts:[{text:$text}]}],generationConfig:{responseModalities:["AUDIO"],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:$voice}}}}}')"
+  else
+    payload="$(printf '{"contents":[{"parts":[{"text":"%s"}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"%s"}}}}}' \
+      "$(_json_escape "$spoken")" "$(_json_escape "$voice")")"
+  fi
   # Key travels as a header via cloud_post's stdin config, not in the URL — see
   # the comment on cloud_post. Response lands in a file because that is what
   # keeps the request body off the command line too.
@@ -1768,7 +1818,7 @@ gen_gemini() {
   chmod 600 "$response" 2>/dev/null
   http="$(cloud_post "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent" \
                      "x-goog-api-key: ${api_key}" "$payload" "$response")"
-  audio_b64="$(jq -r '.candidates[0].content.parts[0].inlineData.data // empty' "$response" 2>/dev/null)"
+  audio_b64="$(json_get_gemini_audio "$response")"
   if [ -z "$audio_b64" ]; then
     log error "gemini TTS request failed (http ${http}): $(tr -d '\n' < "$response" 2>/dev/null | cut -c1-160)"
     rm -f "$response"; return 1
@@ -1796,12 +1846,18 @@ gen_inworld() {
   # --argjson (a bad value would abort payload construction).
   rate="$(resolve_speed INWORLD_SPEAKING_RATE 1.11)"
   case "$rate" in ''|*[!0-9.]*) rate=1.3 ;; esac
-  payload="$(jq -n --arg text "$text" --arg voice "$voice" --arg model "$model" --arg lang "$lang" --argjson rate "$rate" '{text:$text,voiceId:$voice,modelId:$model,language:$lang,audioConfig:{audioEncoding:"LINEAR16",sampleRateHertz:24000,speakingRate:$rate}}')"
+  if have_jq; then
+    payload="$(jq -n --arg text "$text" --arg voice "$voice" --arg model "$model" --arg lang "$lang" --argjson rate "$rate" '{text:$text,voiceId:$voice,modelId:$model,language:$lang,audioConfig:{audioEncoding:"LINEAR16",sampleRateHertz:24000,speakingRate:$rate}}')"
+  else
+    # rate is already validated numeric above, safe to interpolate unescaped.
+    payload="$(printf '{"text":"%s","voiceId":"%s","modelId":"%s","language":"%s","audioConfig":{"audioEncoding":"LINEAR16","sampleRateHertz":24000,"speakingRate":%s}}' \
+      "$(_json_escape "$text")" "$(_json_escape "$voice")" "$(_json_escape "$model")" "$(_json_escape "$lang")" "$rate")"
+  fi
   response="$(mktemp "${PLUGIN_DATA_DIR}/vr-resp.XXXXXX" 2>/dev/null || mktemp "${TMPDIR:-/tmp}/vr-resp.XXXXXX")" || return 1
   chmod 600 "$response" 2>/dev/null
   http="$(cloud_post "https://api.inworld.ai/tts/v1/voice" \
                      "Authorization: Basic ${api_key}" "$payload" "$response")"
-  audio_b64="$(jq -r '.audioContent // empty' "$response" 2>/dev/null)"
+  audio_b64="$(json_get_field_file "$response" audioContent)"
   if [ -z "$audio_b64" ]; then
     log error "inworld TTS request failed (http ${http}): $(tr -d '\n' < "$response" 2>/dev/null | cut -c1-160)"
     rm -f "$response"; return 1
@@ -1826,7 +1882,16 @@ gen_elevenlabs() {
   # 1.0 is safe for every model. Validate numeric for jq's --argjson.
   speed="$(get_tuning ELEVENLABS_SPEED 1.0)"
   case "$speed" in ''|*[!0-9.]*) speed=1.0 ;; esac
-  payload="$(jq -n --arg text "$text" --arg model "$model" --argjson speed "$speed" '{text:$text, model_id:$model, voice_settings:{speed:$speed}}')"
+  if have_jq; then
+    payload="$(jq -n --arg text "$text" --arg model "$model" --argjson speed "$speed" '{text:$text, model_id:$model, voice_settings:{speed:$speed}}')"
+  else
+    # speed is already validated numeric above (falls back to 1.0 otherwise),
+    # so it is safe to interpolate unescaped; text and model go through
+    # _json_escape since text is Claude's own response and may contain
+    # quotes/backslashes/newlines.
+    payload="$(printf '{"text":"%s","model_id":"%s","voice_settings":{"speed":%s}}' \
+      "$(_json_escape "$text")" "$(_json_escape "$model")" "$speed")"
+  fi
   raw="${out%.mp3}-raw.mp3"
   http="$(cloud_post "https://api.elevenlabs.io/v1/text-to-speech/${voice}" \
                      "xi-api-key: ${api_key}" "$payload" "$raw")"
@@ -2027,21 +2092,29 @@ _play_media_file() {
     elapsed="$(awk "BEGIN{e=$(date +%s.%N)-$started; if(e<0)e=0; printf \"%.1f\", e}")"
     _PLAY_LAST_AUDIO_AT="$started"
   else
-    termux-media-player play "$file" >/dev/null 2>&1
+    _audio_play_start "$file"
     _PLAY_LAST_AUDIO_AT="${EPOCHREALTIME:-$(date +%s.%N)}"
     _capture_played_file "$file" chunk
   fi
   _PLAY_LAST_DUR="$dur"
   if [ -n "$dur" ]; then
     sleep "$(awk "BEGIN{d=$dur-$lead-$elapsed; if(d<0)d=0; if(d>$cap)d=$cap; printf \"%.1f\", d}")"
+    # ffplay -autoexit needs a brief moment after the audio itself ends to
+    # actually flush and release the file handle. The sleep above targets the
+    # audio's own duration exactly, so the caller's deferred cleanup rm (right
+    # after this function returns) landed inside that gap and raced ffplay's
+    # own shutdown on Windows ("Device or resource busy", observed 2026-07-31).
+    # termux-media-player has no such handle of its own to release — Android's
+    # media service owns the file independently — so this only applies here.
+    command -v termux-media-player >/dev/null 2>&1 || sleep 0.3
   else
     local waited=0
     while [ "$waited" -lt "$cap" ]; do
       sleep 1
       waited=$(( waited + 1 ))
-      termux-media-player info 2>/dev/null | grep -q 'Status: Playing' || break
+      _audio_is_playing || break
     done
-    termux-media-player stop >/dev/null 2>&1
+    _audio_stop
     rm -f "$file"
   fi
   return 0
@@ -2072,7 +2145,7 @@ _play_media_file() {
 # first chunk could not be generated, so the caller can fall back to ondevice.
 speak_cloud_chunked() {
   local backend="$1" text="$2" cap="$3" seed="${4:-}" plan="${5:-}" playing="${6:-}" pregen_uid="${7:-}"
-  command -v termux-media-player >/dev/null 2>&1 || { log error "${backend}: termux-media-player not found"; return 1; }
+  _audio_player_available || { log error "${backend}: no player available (termux-media-player, or ffplay on Windows)"; return 1; }
 
   local chunks=() c
   # PLAN (5th arg, optional): a chunk plan the caller had built ahead of time,
