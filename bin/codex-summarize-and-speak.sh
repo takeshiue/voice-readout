@@ -33,7 +33,7 @@ fi
 # long responses and embedded newlines are not passed via environment variables.
 source "$(dirname "$0")/tts-lib.sh"
 INPUT_JSON="$(cat)"
-LAST_MSG="$(printf '%s' "$INPUT_JSON" | jq -r '.last_assistant_message // empty' 2>/dev/null)"
+LAST_MSG="$(json_get_field "$INPUT_JSON" last_assistant_message)"
 [ -n "$LAST_MSG" ] || { printf '{}\n'; exit 0; }
 
 umask 077

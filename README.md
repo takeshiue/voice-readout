@@ -69,6 +69,17 @@ Android スマホ
 4. `claude` で Claude Code を起動する
 5. あとは普通に会話するだけ。Claude の応答が終わるたびに声で読み上げ、許可確認・入力待ちも声で知らせる（追加設定なしで動く）
 
+### Windows での利用
+
+Windows PC 上で Claude Code を使う場合も、追加インストールなしで動く。
+
+- **フックの実行環境**: Claude Code は Windows では Hooks の実行に Git for Windows 同梱の Git Bash を使う。GitHub を使っている開発者はほぼ必ず Git 本体を入れているので、これは特別な準備なしに揃っている前提でよい。
+- **オンデバイス読み上げ**: Android の `termux-tts-speak` の代わりに、Windows 標準搭載の PowerShell 経由で SAPI（`System.Speech`）を使う。API キーも追加インストールも不要。
+- **`jq`**: proot 側と違い、Windows には既定で入っていない。ただし**必須ではない**——`jq` が無ければ、フックが受け取る JSON の読み取りは PowerShell の `ConvertFrom-Json` に自動でフォールバックする（`bin/json-lib.sh`）。入れれば入れたで、そちらが優先して使われる。
+- **ステータスライン**: `~/.claude/settings.json` への登録（`.statusLine` フィールド）だけは `jq` での書き換えを前提にしている。`jq` が無い環境では自動登録がスキップされ、`bin/doctor.sh` または `bin/statusline.sh --install` が手で追加すべき1行を表示するので、それを `settings.json` に足せばよい。
+
+導入後に `bash bin/doctor.sh` を実行すると、host / commands の欄に Windows 固有の項目（PowerShell・cygpath の有無）が出るので、まず詰まっていないかはそこで確認できる。
+
 ## インストール
 
 ### 1. 前提を揃える

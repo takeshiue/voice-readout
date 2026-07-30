@@ -1,6 +1,11 @@
 # Shared TTS helpers for voice-readout hooks. Sourced, not executed.
 # Callers must be registered with "async": true and must always exit 0.
 
+# json_get_field / have_jq / _json_escape — portable JSON field reads with a
+# PowerShell fallback for hosts without jq (see json-lib.sh for why).
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-lib.sh"
+
 # split_into_speech_chunks (below) uses bash's ${#s} and ${s:a:b}, which only
 # count/slice by Unicode character under a UTF-8-aware locale — otherwise
 # they operate byte-wise, and slicing a multi-byte Japanese character in half
@@ -403,13 +408,19 @@ resolve_speed() {
 # stdout, by contrast, is fed to Claude's context and never displayed. This also
 # renders from an "async": true hook, but only once that hook process exits — so
 # callers emit it from the fast-returning hook process, never from a detached
-# worker whose stdout is already closed. No-op on empty text or if jq is missing
-# (rather than emit broken JSON that would leak into Claude's context instead).
+# worker whose stdout is already closed. No-op on empty text (rather than emit
+# broken JSON that would leak into Claude's context instead). Builds the JSON
+# with jq when available; otherwise hand-escapes the one string field itself
+# (_json_escape, from json-lib.sh) rather than requiring jq for output this
+# simple.
 announce_user() {
   local text="$1"
   [ -n "$text" ] || return 0
-  command -v jq >/dev/null 2>&1 || return 0
-  jq -cn --arg m "$text" '{systemMessage: $m}'
+  if have_jq; then
+    jq -cn --arg m "$text" '{systemMessage: $m}'
+  else
+    printf '{"systemMessage":"%s"}\n' "$(_json_escape "$text")"
+  fi
 }
 
 # "summary" (default, one sentence via Haiku) or "full" (verbatim, no LLM).
