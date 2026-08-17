@@ -30,7 +30,17 @@ set -u
 # are executed by the Termux app, which cannot see this container's /root,
 # while the plugin runs in the container; the Termux home directory is visible
 # to both.
-STOP_FILE="/data/data/com.termux/files/home/.voice-readout-stopped"
+#
+# Off Android the Termux path does not exist, so touch failed and `stop` was a
+# no-op (verified 2026-08-15 on Windows). Windows uses USERPROFILE for the same
+# both-sides-can-reach reason: the readout runs under Git Bash, the stop button
+# is a separate PowerShell process, and the user's home is visible to both.
+# Must stay in sync with STOP_SWITCH_FILE in tts-lib.sh.
+if [ -n "${USERPROFILE:-}" ] && [ ! -d /data/data/com.termux ]; then
+  STOP_FILE="$(cygpath "$USERPROFILE" 2>/dev/null || printf '%s' "$HOME")/.voice-readout-stopped"
+else
+  STOP_FILE="/data/data/com.termux/files/home/.voice-readout-stopped"
+fi
 NOTIF_ID="voice-readout-switch"
 
 # The button action runs on the Termux side, which cannot execute anything

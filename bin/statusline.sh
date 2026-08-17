@@ -409,7 +409,14 @@ else
 fi
 # Fixed absolute path, matching readout-switch.sh / tts-lib.sh. The stop switch
 # deliberately does NOT honour CLAUDE_PLUGIN_DATA, so neither does this reader.
-STOP_SWITCH_FILE="/data/data/com.termux/files/home/.voice-readout-stopped"
+# Platform split for the same reason as those two: the Termux path is absent off
+# Android, so this row would have shown "not stopped" even while the Windows
+# switch was pressed.
+if [ -n "${USERPROFILE:-}" ] && [ ! -d /data/data/com.termux ]; then
+  STOP_SWITCH_FILE="$(cygpath "$USERPROFILE" 2>/dev/null || printf '%s' "$HOME")/.voice-readout-stopped"
+else
+  STOP_SWITCH_FILE="/data/data/com.termux/files/home/.voice-readout-stopped"
+fi
 
 # Read one KEY=value from the config. Prints nothing if unset or file missing.
 # Enable semantics match is_enabled(): only the literal "off" disables; an

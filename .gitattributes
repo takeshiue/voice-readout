@@ -5,5 +5,11 @@
 * text=auto eol=lf
 *.sh text eol=lf
 
+# PowerShell scripts hold Japanese UI strings and MUST keep their UTF-8 BOM:
+# Windows PowerShell 5.1 reads a BOM-less script as the system ANSI code page
+# (CP932 on a Japanese install) and renders the Japanese as mojibake. Marked
+# -text so git never normalises or strips those leading bytes.
+*.ps1 -text
+
 # Pre-rendered audio clips are binary; never touch their bytes.
 *.wav binary

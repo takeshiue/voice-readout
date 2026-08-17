@@ -201,7 +201,22 @@ get_tuning_dec_for() {  # KEY BACKEND DEFAULT
 # measured across all three cloud backends — a better first guess than a smaller
 # number, and wrong in the safe direction if a phone turns out to be quicker,
 # since too small only leaves a short silence while too large clips words.
-CLOUD_PLAY_LEAD_START=2.2
+#
+# Off Android there is nothing for the lead to hide. Everything above describes
+# the Termux:API round trip, and ffplay has none of it: `play` is a local exec
+# that returns in milliseconds, so starting the next chunk 2.2s early does not
+# cover a gap, it overlaps 2.2s of speech with the tail of the chunk before it
+# and the listener hears both at once. Measured 2026-08-15 on Windows/ffplay:
+# 0 leaves no audible seam at all. So the lead — and the calibration that
+# learns it, which is sampling a latency that isn't there — applies to the
+# phone only. The player, not the OS, is what matters (Termux:API is the thing
+# with the latency), which is why this keys off termux-media-player exactly the
+# way _audio_play_start does rather than sniffing uname.
+if command -v termux-media-player >/dev/null 2>&1; then
+  CLOUD_PLAY_LEAD_START=2.2
+else
+  CLOUD_PLAY_LEAD_START=0
+fi
 PLAY_LEAD_FILE="${PLUGIN_DATA_DIR}/voice-readout-play-lead"
 PLAY_LEAD_SAMPLE_FILE="${PLUGIN_DATA_DIR}/voice-readout-play-lead-samples"
 # A notice waiting to be shown in the transcript. Written by whatever wants to
@@ -225,7 +240,12 @@ _cloud_play_lead() {
 }
 
 # True while CLOUD_PLAY_LEAD is auto and no calibration has been written yet.
+# Never true off Android: with ffplay the quantity being measured is zero (see
+# CLOUD_PLAY_LEAD_START), so sampling 24 seams could only average up off the
+# floor and reintroduce the overlap that 0 exists to avoid. auto there means
+# "0, settled" rather than "0, still learning".
 _cloud_play_lead_learning() {
+  command -v termux-media-player >/dev/null 2>&1 || return 1
   case "$(get_tuning CLOUD_PLAY_LEAD auto)" in ''|auto) ;; *) return 1 ;; esac
   [ ! -s "$PLAY_LEAD_FILE" ]
 }
@@ -396,11 +416,25 @@ is_enabled() {
 # wins, so a single engine can still be tuned by ear.
 resolve_speed() {
   local key="$1" factor="$2" val
+  # Memoised per (key, factor) for the life of the process. Two get_tuning greps
+  # plus an awk measured 0.58s per call here, and the on-device path calls this
+  # once per unit — on a hybrid readout that is a fixed cost paid several times
+  # over, all of it inside the window the cloud generation is racing against.
+  # Cache key is flattened into a variable name because bash 3 (macOS) has no
+  # associative arrays and this file still has to run there.
+  local cvar; cvar="_RESOLVE_SPEED_CACHE_${key}_${factor//./_}"
+  if [ -n "${!cvar:-}" ]; then printf '%s' "${!cvar}"; return; fi
   val="$(get_tuning "$key" auto)"
+  local out
   case "$val" in
-    ''|auto) awk -v s="$(get_tuning READOUT_SPEED 1.2)" -v f="$factor" 'BEGIN{printf "%.2f", s*f}' ;;
-    *)       printf '%s' "$val" ;;
+    ''|auto) out="$(awk -v s="$(get_tuning READOUT_SPEED 1.2)" -v f="$factor" 'BEGIN{printf "%.2f", s*f}')" ;;
+    *)       out="$val" ;;
   esac
+  # Config changes mid-readout are not a case worth serving: the readout already
+  # in flight was planned against the old value, and honouring a new one halfway
+  # would change speed mid-sentence.
+  printf -v "$cvar" '%s' "$out" 2>/dev/null || eval "$cvar=\$out"
+  printf '%s' "$out"
 }
 
 # Surface a one-line notice to the USER in the Claude Code transcript. The hook
@@ -801,7 +835,18 @@ readout_is_speaking() {
 # callers that would rather shorten their text than be refused (the Stop
 # hook's summary path) can ask instead of hardcoding it.
 ondevice_max_chars() {
-  printf '%s' "$(get_tuning_num ONDEVICE_MAX_CHARS 240)"
+  # 240 is a Termux:API number: it exists to stay clear of the engine hang
+  # described in speak()'s ondevice branch (measured there as 250 chars fine /
+  # 336 chars wedged every time). SAPI has no such failure — a 1053-char readout
+  # completed on it unaided (2026-08-15) — so applying Android's ceiling off
+  # Android would cap the on-device voice for a bug it cannot have. It matters
+  # for hybrid in particular: the opening has to cover the cloud's first-sound
+  # wait, 13-15s on gemini, and 240 chars is only ~45s at the on-device pace, so
+  # a ceiling far above it leaves the handover free to pick the length it needs.
+  # An explicit ONDEVICE_MAX_CHARS still wins on either platform.
+  local d=240
+  command -v termux-tts-speak >/dev/null 2>&1 || d=2000
+  printf '%s' "$(get_tuning_num ONDEVICE_MAX_CHARS "$d")"
 }
 
 # Spoken as a short preface when an over-length readout is degraded to a summary
@@ -889,9 +934,47 @@ _capture_played_file() {
 # "is it still playing" is tracked here as a PID or the ffplay side of this
 # is really just process liveness.
 FFPLAY_PID_FILE="${PLUGIN_DATA_DIR}/voice-readout-ffplay.pid"
+# The on-device (SAPI) host's pid while it is speaking. Exists for the same reason
+# FFPLAY_PID_FILE does — something has to be killable — but for the on-device
+# voice, whose Speak()/PlaySync() cannot be interrupted from inside.
+SAPI_PID_FILE="${PLUGIN_DATA_DIR}/voice-readout-sapi.pid"
+
+# Kill an in-flight on-device utterance. Used by the stop switch, and by anything
+# that needs the speaker quiet now rather than at the end of the sentence.
+_sapi_stop() {
+  local pid; pid="$(cat "$SAPI_PID_FILE" 2>/dev/null)"
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+  # Killing the bash-side job is not enough on Windows: powershell.exe is a
+  # separate Win32 process holding the audio device, and it survives its parent.
+  # taskkill /T takes the tree; the bash kill is the fallback where it is absent.
+  if command -v taskkill >/dev/null 2>&1; then
+    local wpid
+    # ps in Git Bash reports the Windows pid in the WINPID column.
+    wpid="$(ps -W 2>/dev/null | awk -v p="$pid" '$1==p {print $4; exit}')"
+    [ -n "$wpid" ] && taskkill //PID "$wpid" //T //F >/dev/null 2>&1
+  fi
+  kill "$pid" 2>/dev/null
+  local waited=0
+  while [ "$waited" -lt 15 ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 0.1; waited=$(( waited + 1 ))
+  done
+  rm -f "$SAPI_PID_FILE" 2>/dev/null
+}
 
 _audio_player_available() {
   command -v termux-media-player >/dev/null 2>&1 || command -v ffplay >/dev/null 2>&1
+}
+
+# Is there an on-device (no key, no network) voice on this platform? The two
+# implementations are Android's termux-tts-speak and Windows' SAPI, and speak()'s
+# ondevice branch already picks between them; this is for callers that need to
+# know BEFORE committing to a path — speak_hybrid, which must decline cleanly and
+# let the ordinary cloud path run rather than half-start a handover it cannot
+# finish. Kept beside _audio_player_available because they are asked together.
+_ondevice_voice_available() {
+  command -v termux-tts-speak >/dev/null 2>&1 && return 0
+  # Mirrors speak_windows_sapi's own requirement (PowerShell + System.Speech).
+  command -v powershell.exe >/dev/null 2>&1 || command -v powershell >/dev/null 2>&1
 }
 
 _audio_play_start() {
@@ -916,6 +999,11 @@ _audio_is_playing() {
 }
 
 _audio_stop() {
+  # The on-device voice too, not just the clip player: on Windows these are two
+  # different processes and "stop the audio" has to mean both, or a stop pressed
+  # during the on-device half of a hybrid readout silences the cloud voice that
+  # is not playing yet and leaves the one that is.
+  _sapi_stop
   if command -v termux-media-player >/dev/null 2>&1; then
     termux-media-player stop >/dev/null 2>&1
     return
@@ -1698,16 +1786,83 @@ speak_windows_sapi() {
   rate="$(resolve_speed TTS_RATE 1.01)"
   sapi_rate="$(awk -v r="$rate" 'BEGIN{v=int((r-1)*10+0.5); if(v>10)v=10; if(v<-10)v=-10; print v}')"
 
-  "$ps" -NoProfile -Command \
-    "Add-Type -AssemblyName System.Speech; \
-     \$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; \
-     \$s.Rate = $sapi_rate; \
-     \$s.Speak([System.IO.File]::ReadAllText('$winpath', [System.Text.Encoding]::UTF8))"
-  local rc=$?
+  # Delegated to bin/sapi-speak.ps1, which synthesises to memory and trims the
+  # voice's fixed ~550ms of trailing silence before playing. Measured 2026-08-15:
+  # 1.22s -> 0.88s for one character, and the saving is the same at any length
+  # because the padding is constant. Worth having beyond politeness — the
+  # on-device voice covers the cloud's first-chunk generation on a hybrid
+  # handover and is called once per unit, so this is paid repeatedly inside the
+  # window the cloud is racing against.
+  #
+  # A file rather than -Command: the trimming needs real code, and inlining it
+  # through bash quoting into a PowerShell one-liner is how quoting bugs get
+  # made. The script falls back to a plain Speak() if the WAV container is not
+  # what it expects, so an unusual voice degrades to the old behaviour rather
+  # than going silent.
+  # Run it in the BACKGROUND and poll, rather than calling it and waiting.
+  #
+  # Speak()/PlaySync() block for the whole utterance and offer no way in, so a
+  # foreground call cannot be interrupted: pressing 停止 mid-sentence left the
+  # audio running to the end (observed 2026-08-15), and with a long unit that is
+  # tens of seconds of speech after the switch says everything is stopped. The
+  # cloud side never had this problem because its player is a separate process
+  # that _audio_stop can kill; the on-device side needs the same shape.
+  #
+  # So: start the host detached, remember its pid, and watch the switch while it
+  # runs. On 停止 the process is killed and the audio dies with it — that is what
+  # makes the stop immediate here, not "immediate for the next unit".
+  local sapi_script="$(dirname "${BASH_SOURCE[0]}")/sapi-speak.ps1"
+  local rc sapi_pid
+  if [ -f "$sapi_script" ]; then
+    local win_script="$sapi_script"
+    command -v cygpath >/dev/null 2>&1 && win_script="$(cygpath -w "$sapi_script")"
+    "$ps" -NoProfile -ExecutionPolicy Bypass -File "$win_script" \
+      -TextFile "$winpath" -Rate "$sapi_rate" &
+    sapi_pid=$!
+  else
+    # Script missing (partial install, or running from a stripped copy): speak
+    # the old way rather than not at all.
+    "$ps" -NoProfile -Command \
+      "Add-Type -AssemblyName System.Speech; \
+       \$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; \
+       \$s.Rate = $sapi_rate; \
+       \$s.Speak([System.IO.File]::ReadAllText('$winpath', [System.Text.Encoding]::UTF8))" &
+    sapi_pid=$!
+  fi
+  printf '%s' "$sapi_pid" > "$SAPI_PID_FILE" 2>/dev/null
+
+  # 0.2s poll: fast enough that a 停止 is not audible as a delay, cheap enough
+  # that a 30s unit costs 150 file tests.
+  while kill -0 "$sapi_pid" 2>/dev/null; do
+    if [ -e "$STOP_SWITCH_FILE" ]; then
+      # Kill the whole tree: powershell.exe is a Windows process and the audio is
+      # held by it, so the bash-side pid alone can leave the sound playing.
+      _sapi_stop
+      rm -f "$tmp" "$SAPI_PID_FILE" 2>/dev/null
+      log skip "読み上げ停止中 (stop switch pressed mid-utterance, ondevice killed)"
+      return 0
+    fi
+    sleep 0.2
+  done
+  wait "$sapi_pid" 2>/dev/null
+  rc=$?
+  rm -f "$SAPI_PID_FILE" 2>/dev/null
 
   rm -f "$tmp" 2>/dev/null
   if [ "$rc" -eq 0 ]; then
     log spoke "windows-sapi (rate ${sapi_rate})"
+    # Speak() is synchronous, so this point IS the end of the audio — the cue can
+    # be played rather than pre-concatenated (see _play_chunk_marker). One cue
+    # per call, which is what makes repeated on-device fallbacks audible.
+    _play_chunk_marker
+    # Same stamp the termux-tts-speak path writes on success. _hyb_preplay_ok()
+    # requires it to decide the on-device engine is warm enough to predict, and
+    # with only the Android path writing it the file never existed on Windows, so
+    # pre-play was refused on every single readout ("no pre-play, engine idle past
+    # HYBRID_PREPLAY_MAX_IDLE") and the cloud's `play` was issued only after the
+    # on-device voice had already stopped. That is the handover seam the listener
+    # hears: 18s of it, measured 2026-08-15.
+    date +%s > "$ONDEVICE_LASTSPOKE_FILE" 2>/dev/null
     return 0
   fi
   log error "windows-sapi failed (exit $rc)"
@@ -1718,7 +1873,21 @@ speak_windows_sapi() {
 # in this file is built from CLAUDE_PLUGIN_DATA; this one must not be, because
 # redirecting that variable is precisely how the ordinary toggles get
 # bypassed.
-STOP_SWITCH_FILE="/data/data/com.termux/files/home/.voice-readout-stopped"
+#
+# The Termux path does not exist off Android, so a `touch` of it FAILS there
+# (verified 2026-08-15 on Windows) — which meant the stop switch, the one
+# mechanism that has to work when nothing else does, silently did nothing on
+# Windows: readout-switch.sh created no file and speak() never saw a stop.
+# Windows gets its own fixed path under USERPROFILE, chosen for the same reason
+# the Termux one is what it is: a location both the readout (running under Git
+# Bash) and the stop button (a separate PowerShell process) can reach. Still
+# NOT derived from CLAUDE_PLUGIN_DATA — the bypass this guards against is the
+# same on either platform.
+if [ -n "${USERPROFILE:-}" ] && [ ! -d /data/data/com.termux ]; then
+  STOP_SWITCH_FILE="$(cygpath "$USERPROFILE" 2>/dev/null || printf '%s' "$HOME")/.voice-readout-stopped"
+else
+  STOP_SWITCH_FILE="/data/data/com.termux/files/home/.voice-readout-stopped"
+fi
 
 # ---------------------------------------------------------------------------
 # Chunked, prefetching cloud readout.
@@ -1937,6 +2106,41 @@ gen_elevenlabs() {
 # format (gemini/inworld wav, elevenlabs mp3) and the .wav byte-length math in
 # _audio_duration stays valid. No-op unless the toggle is on. Best-effort: on any
 # ffmpeg failure the chunk is left unmarked rather than lost.
+# The on-device counterpart of _append_chunk_marker, for engines whose finish is
+# OBSERVABLE. SAPI's $s.Speak() is synchronous — it returns when the last
+# syllable is out — so the cue can simply be played after it, and there is no
+# file to concatenate onto anyway (PowerShell speaks straight to the speaker).
+# Android needs the concat trick precisely because termux-tts-speak reports
+# nothing until it returns, so nothing there knows when to play a cue.
+#
+# What this is FOR: counting. One cue per on-device call means the listener can
+# hear how many times the local voice was used — and a hybrid readout that keeps
+# falling back to it, over and over, is one where the cloud engine never catches
+# up. That count is the measurement that says whether the on-device stretch is
+# the right length, and without a cue there is no way to take it by ear.
+#
+# Played synchronously (not backgrounded): out of order it would land inside the
+# next unit's speech and stop marking a boundary at all. It costs the ~0.8s of
+# the clip, which is why this only runs with the toggle on.
+_play_chunk_marker() {
+  # The stop switch outranks everything, including a diagnostic cue: while it is
+  # pressed NOTHING may come out of the speaker. This function was missing the
+  # test and kept clicking through a stopped readout (2026-08-15) — a stop that
+  # still makes noise is not a stop, which is the whole premise of the switch
+  # (see bin/readout-switch.sh). A bare file test, cheaper than the config read
+  # below and correct to put first.
+  [ -e "$STOP_SWITCH_FILE" ] && return 0
+  # Then the toggle, before the two filesystem checks: it is the cheapest of them
+  # and the one that is false almost always, so the off case stays a single grep
+  # — measured 0.31s when the file tests ran first, on a call that was going to
+  # return immediately anyway.
+  [ "$(get_tuning CHUNK_MARKER off)" = "on" ] || return 0
+  [ -f "$CHUNK_MARKER_CLIP" ] || return 0
+  command -v ffplay >/dev/null 2>&1 || return 0
+  ffplay -nodisp -autoexit -loglevel error "$CHUNK_MARKER_CLIP" >/dev/null 2>&1
+  return 0
+}
+
 _append_chunk_marker() {
   local f="$1" ext tmp
   [ "$(get_tuning CHUNK_MARKER off)" = "on" ] || return 0
@@ -2600,10 +2804,34 @@ _hyb_spec_discard() {
 # under-estimate and the cloud voice talks over the on-device one, which is what
 # 17.1s of speech against an 11.5s estimate did on 2026-07-28.
 _ondevice_speech_secs() {
-  local chars=${#1} start rate
-  start="$(get_tuning_dec ONDEVICE_START_SECS 4.6)"
-  rate="$(get_tuning_dec ONDEVICE_CHARS_PER_SEC 5.0)"
-  awk "BEGIN{r=$rate; if(r<=0)r=5.0; printf \"%.1f\", $start + $chars/r}"
+  local chars=${#1} start rate dstart=4.6 drate=5.0
+  # 4.6s / 5.0 chars-per-sec are termux-tts-speak numbers: the 4.6 is mostly the
+  # Termux:API round trip before the first syllable, which SAPI does not pay, and
+  # the 5.0 was measured at that engine's pace. Applied to SAPI they overestimate
+  # badly — 105 chars measured 14.1s against a 25.6s estimate (2026-08-15) — and
+  # for hybrid the estimate is not cosmetic: the pre-play is issued LEAD seconds
+  # before the predicted end, so an estimate 11s long means the cloud's `play` is
+  # issued 11s late and the listener hears exactly that as the handover seam.
+  # SAPI, taken from the LOG of real readouts (2026-08-15) — the interval between
+  # "hybrid: opening merged into one unit (N chars)" and the "[spoke]
+  # windows-sapi" that closes it, i.e. wall time from asking for the utterance to
+  # the audio actually being over:
+  #   271c/41s  320c/38s  303c/52s  275c/39s
+  #   289c/45s  313c/38s  281c/39s  327c/55s
+  # = 5.8-8.4 chars/sec, so 7.0 with a ~1s fixed cost.
+  #
+  # NOT the duration of the synthesised WAV. Measuring that gave 20.1 chars/sec
+  # and it is a real number — it is just not this one: the wall time also carries
+  # the host process start and the device open, and at ~300 chars the two differ
+  # by a factor of three (16.6s predicted against 55s actual, seen in the log).
+  # What the estimate is used for is deciding when the on-device voice will stop
+  # so the cloud's play can be issued just before it, so wall time is the only
+  # quantity that means anything here. Three earlier passes got this wrong by
+  # fitting a rate to something other than wall time.
+  if ! command -v termux-tts-speak >/dev/null 2>&1; then dstart=1.0; drate=7.0; fi
+  start="$(get_tuning_dec ONDEVICE_START_SECS "$dstart")"
+  rate="$(get_tuning_dec ONDEVICE_CHARS_PER_SEC "$drate")"
+  awk "BEGIN{r=$rate; if(r<=0)r=$drate; printf \"%.1f\", $start + $chars/r}"
 }
 
 # _ondevice_preplay_safe — true when the engine last spoke recently enough that
@@ -2728,7 +2956,7 @@ _hyb_speak_with_preplay() {
   if [ ! -e "$STOP_SWITCH_FILE" ] && [ "$(_hyb_spec_state "$backend" "$b")" = ok ]; then
     local seed; seed="$(_cloud_audio_path "$backend" "hyb-$b")"
     if [ -s "$seed" ]; then
-      termux-media-player play "$seed" >/dev/null 2>&1
+      _audio_play_start "$seed"
       _HYB_PREPLAY_STARTED="$(date +%s.%N)"
       # Captured here rather than in _play_media_file: that function's
       # pre-played branch never issues a `play`, so this is the only site that
@@ -2775,8 +3003,20 @@ _hyb_speak_with_preplay() {
 
 speak_hybrid() {
   local backend="$1" text="$2" cap="$3"
-  command -v termux-tts-speak >/dev/null 2>&1 || return 1
-  command -v termux-media-player >/dev/null 2>&1 || return 1
+  # What this needs is AN on-device voice and A player, not Android's two in
+  # particular. Gating on termux-tts-speak/termux-media-player by name meant
+  # hybrid silently never ran off Android (found 2026-08-15 on Windows: the
+  # config said on, the statusline said on, and speak_hybrid returned 1 before
+  # doing anything) — on the platform that needs it most, since it is where the
+  # slowest first-sound wait was measured (gemini, 13-15s).
+  #
+  # Both halves already have cross-platform implementations in this file, so the
+  # gate is the only thing that was Android-only: the opening is spoken by
+  # recursing into speak() with the ondevice backend, which picks SAPI when
+  # termux-tts-speak is absent, and the seed chunk goes through
+  # _audio_play_start / _audio_stop, which wrap ffplay the same way.
+  _ondevice_voice_available || return 1
+  _audio_player_available || return 1
 
   local unit_max ondevice_cap depth omax
   # Unit size is the granularity of the handover, so it is also the maximum
@@ -2901,7 +3141,7 @@ speak_hybrid() {
       log skip "読み上げ停止中 (hybrid, ${i}/${n} units spoken)"
       # A pre-played chunk 0 is already coming out of the speaker, and unlike
       # the candidates below it cannot be dealt with by deleting a file.
-      [ -n "$_HYB_PREPLAY_STARTED" ] && termux-media-player stop >/dev/null 2>&1
+      [ -n "$_HYB_PREPLAY_STARTED" ] && _audio_stop
       for (( p = 0; p < n; p++ )); do
         if [ -n "${spec_pid[$p]:-}" ]; then _hyb_spec_discard "$backend" "$p" "${spec_pid[$p]}"; fi
       done
