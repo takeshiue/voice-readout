@@ -12,10 +12,6 @@ voice-readout-ondevice.lock
 .voice-readout-tmp/
 *.log
 
-# Notes for whoever (or whatever) works on this repo — about how to work here,
-# not about how the plugin behaves. Deliberately not shipped: it is development
-# context, and users installing the plugin have no use for it.
-AGENTS.md
 
 # Article/SNS artwork generated for write-ups about this plugin. Not part of
 # what gets installed, so it stays out of the repo.

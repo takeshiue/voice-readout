@@ -1,0 +1,152 @@
+{
+  "filler_01.wav": {
+    "duration_ms": 910.0,
+    "duration_sec": 0.91,
+    "framerate": 24000
+  },
+  "filler_02.wav": {
+    "duration_ms": 1250.0,
+    "duration_sec": 1.25,
+    "framerate": 24000
+  },
+  "filler_03.wav": {
+    "duration_ms": 535.0,
+    "duration_sec": 0.535,
+    "framerate": 24000
+  },
+  "filler_04.wav": {
+    "duration_ms": 1095.0,
+    "duration_sec": 1.095,
+    "framerate": 24000
+  },
+  "filler_05.wav": {
+    "duration_ms": 1320.0,
+    "duration_sec": 1.32,
+    "framerate": 24000
+  },
+  "filler_06.wav": {
+    "duration_ms": 930.0,
+    "duration_sec": 0.93,
+    "framerate": 24000
+  },
+  "filler_07.wav": {
+    "duration_ms": 825.0,
+    "duration_sec": 0.825,
+    "framerate": 24000
+  },
+  "filler_08.wav": {
+    "duration_ms": 675.0,
+    "duration_sec": 0.675,
+    "framerate": 24000
+  },
+  "filler_09.wav": {
+    "duration_ms": 710.0,
+    "duration_sec": 0.71,
+    "framerate": 24000
+  },
+  "filler_10.wav": {
+    "duration_ms": 400.0,
+    "duration_sec": 0.4,
+    "framerate": 24000
+  },
+  "filler_11.wav": {
+    "duration_ms": 570.0,
+    "duration_sec": 0.57,
+    "framerate": 24000
+  },
+  "filler_12.wav": {
+    "duration_ms": 1145.0,
+    "duration_sec": 1.145,
+    "framerate": 24000
+  },
+  "filler_13.wav": {
+    "duration_ms": 1100.0,
+    "duration_sec": 1.1,
+    "framerate": 24000
+  },
+  "filler_14.wav": {
+    "duration_ms": 795.0,
+    "duration_sec": 0.795,
+    "framerate": 24000
+  },
+  "filler_15.wav": {
+    "duration_ms": 1025.0,
+    "duration_sec": 1.025,
+    "framerate": 24000
+  },
+  "filler_16.wav": {
+    "duration_ms": 1370.0,
+    "duration_sec": 1.37,
+    "framerate": 24000
+  },
+  "filler_17.wav": {
+    "duration_ms": 1025.0,
+    "duration_sec": 1.025,
+    "framerate": 24000
+  },
+  "filler_18.wav": {
+    "duration_ms": 925.0,
+    "duration_sec": 0.925,
+    "framerate": 24000
+  },
+  "filler_19.wav": {
+    "duration_ms": 815.0,
+    "duration_sec": 0.815,
+    "framerate": 24000
+  },
+  "filler_20.wav": {
+    "duration_ms": 1020.0,
+    "duration_sec": 1.02,
+    "framerate": 24000
+  },
+  "filler_21.wav": {
+    "duration_ms": 1150.0,
+    "duration_sec": 1.15,
+    "framerate": 24000
+  },
+  "filler_22.wav": {
+    "duration_ms": 890.0,
+    "duration_sec": 0.89,
+    "framerate": 24000
+  },
+  "filler_23.wav": {
+    "duration_ms": 1030.0,
+    "duration_sec": 1.03,
+    "framerate": 24000
+  },
+  "filler_24.wav": {
+    "duration_ms": 1085.0,
+    "duration_sec": 1.085,
+    "framerate": 24000
+  },
+  "filler_25.wav": {
+    "duration_ms": 1070.0,
+    "duration_sec": 1.07,
+    "framerate": 24000
+  },
+  "filler_26.wav": {
+    "duration_ms": 830.0,
+    "duration_sec": 0.83,
+    "framerate": 24000
+  },
+  "filler_27.wav": {
+    "duration_ms": 1090.0,
+    "duration_sec": 1.09,
+    "framerate": 24000
+  },
+  "filler_28.wav": {
+    "duration_ms": 845.0,
+    "duration_sec": 0.845,
+    "framerate": 24000
+  },
+  "filler_29.wav": {
+    "duration_ms": 915.0,
+    "duration_sec": 0.915,
+    "framerate": 24000
+  },
+  "filler_30.wav": {
+    "duration_ms": 955.0,
+    "duration_sec": 0.955,
+    "framerate": 24000
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "voice-readout": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "${PLUGIN_ROOT}/bin/agy-pre-warm.sh"
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "${PLUGIN_ROOT}/bin/agy-summarize-and-speak.sh"
+      }
+    ],
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "${PLUGIN_ROOT}/bin/agy-session-start.sh"
+      }
+    ],
+    "SessionEnd": [
+      {
+        "type": "command",
+        "command": "${PLUGIN_ROOT}/bin/agy-session-end.sh"
+      }
+    ]
+  }
+}

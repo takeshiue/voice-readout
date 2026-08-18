@@ -146,7 +146,7 @@ _tuning_backend_key() {
 # key still overrides all of it.
 _engine_default() {  # KEY BACKEND — prints a default, or fails if there is none
   case "$1:$2" in
-    HYBRID_MIN_ONDEVICE_CHARS:gemini) printf '60' ;;   # cover a 6-10s first generation
+    HYBRID_MIN_ONDEVICE_CHARS:gemini) printf '90' ;;   # cover a 9-11s first generation
     HYBRID_PREGEN_CHUNKS:gemini)      printf '3' ;;    # little slack, so work further ahead
     CLOUD_SECOND_CHUNK_CHARS:gemini)  printf '200' ;;  # ~6s of fixed TTFB: do not slice it thin
     *) return 1 ;;
@@ -627,9 +627,7 @@ _ONDEVICE_WAKELOCK_HELD=""
 
 ondevice_wake_lock() {
   [ "${_ONDEVICE_WAKELOCK_HELD:-}" = "1" ] && return 0
-  command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock 2>/dev/null
-  # Only remembered as held when someone is keeping it: otherwise the matching
-  # unlock below runs and the flag would be a lie by the next call.
+  command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock >/dev/null 2>&1 &
   [ "${VOICE_READOUT_KEEP_WAKELOCK:-}" = "1" ] && _ONDEVICE_WAKELOCK_HELD=1
   return 0
 }
