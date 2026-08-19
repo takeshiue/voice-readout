@@ -14,6 +14,7 @@
 #        toggle.sh inworld-key <API_KEY|clear>
 #        toggle.sh elevenlabs-key <API_KEY|clear>
 #        toggle.sh fishaudio-key <API_KEY|clear>
+#        toggle.sh env-template
 #   stop         Stop-hook readout (summarizes/reads the final response)
 #   notification Notification-hook readout (permission/idle prompts)
 #   all          stop + notification together (not greeting — that is separate)
@@ -109,6 +110,7 @@ usage() {
   echo "       $0 inworld-key <API_KEY|clear>" >&2
   echo "       $0 elevenlabs-key <API_KEY|clear>" >&2
   echo "       $0 fishaudio-key <API_KEY|clear>" >&2
+  echo "       $0 env-template" >&2
   exit 1
 }
 
@@ -118,6 +120,9 @@ if [ "${1:-}" = "init" ]; then
   STATE=""
 elif [ "${1:-}" = "recalibrate" ]; then
   TARGET=recalibrate
+  STATE=""
+elif [ "${1:-}" = "env-template" ]; then
+  TARGET=env-template
   STATE=""
 elif [ "${1:-}" = "tune" ]; then
   # tune takes two arguments (KEY VALUE), unlike every other subcommand.
@@ -394,6 +399,39 @@ case "$TARGET" in
       set_env_key FISHAUDIO_API_KEY "$STATE"
       echo "voice-readout: fishaudio-key -> saved (${#STATE} chars) in $ENV_FILE"
     fi
+    exit 0
+    ;;
+  env-template)
+    # The *-key subcommands above are the only way this plugin asks for a
+    # secret to go through a shell command instead of a chat message — but a
+    # shell command is itself a barrier for anyone not comfortable with a
+    # terminal. Handing over a file to open and paste into is the more
+    # familiar shape (copy the value, paste after "=", save), so offer that as
+    # an equally supported path rather than the only one.
+    #
+    # Only ever CREATES the file; never touches one that already exists, so
+    # re-running this after keys are already saved cannot lose them or reset
+    # their permissions.
+    if [ -f "$ENV_FILE" ]; then
+      echo "voice-readout: $ENV_FILE はすでにあります（上書きしません）"
+    else
+      old_umask="$(umask)"
+      umask 077
+      cat > "$ENV_FILE" <<'ENV_TEMPLATE_EOF'
+# voice-readout: 使うクラウドTTSのAPIキーを、下の対応する行の "=" の後ろに
+# 貼り付けて保存してください。使わないサービスの行は空のままで構いません。
+# 保存したら Claude Code を再起動するか、"バックエンドを gemini にして" のように
+# チャットで頼めば反映されます（このファイル自体はチャットからは読み書きしません）。
+GEMINI_API_KEY=
+INWORLD_API_KEY=
+ELEVENLABS_API_KEY=
+FISHAUDIO_API_KEY=
+ENV_TEMPLATE_EOF
+      chmod 600 "$ENV_FILE"
+      umask "$old_umask"
+      echo "voice-readout: 雛形を作成しました -> $ENV_FILE"
+    fi
+    echo "  各行の \"=\" の後ろにキーを貼り付けて保存してください。"
     exit 0
     ;;
   recalibrate)

@@ -17,6 +17,11 @@ voice-readout-ondevice.lock
 # what gets installed, so it stays out of the repo.
 generated-images/
 
+# Scratch text handed to the readout while tuning by ear. Written once per
+# measurement run, never read again, and of no use to anyone else.
+.tmp/
+.tmp-*
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

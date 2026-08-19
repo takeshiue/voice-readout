@@ -31,8 +31,12 @@ kv "TMPDIR" "${TMPDIR:-<unset>}"
 
 say "commands"
 # Split by platform so a missing Termux tool on Windows does not read as a
-# fault: each host only needs its own column. jq is shared and is the one the
-# Windows install actually has to add by hand.
+# fault: each host only needs its own column. jq itself is no longer split out
+# of the shared list: on the Termux/proot side it is still the one thing to
+# apt install, but on Windows json-lib.sh falls back to PowerShell's
+# ConvertFrom-Json when jq is missing (see json-lib.sh) — so a bare "[MISS] jq"
+# below is only a real problem on Windows if PowerShell is ALSO missing, which
+# the windows section right after this one shows.
 for c in bash awk sed grep curl jq ffmpeg ffprobe; do
   command -v "$c" >/dev/null 2>&1 && ok "$c -> $(command -v "$c")" || bad "$c"
 done
@@ -44,6 +48,13 @@ printf '  -- windows --\n'
 for c in powershell.exe powershell cygpath; do
   command -v "$c" >/dev/null 2>&1 && ok "$c" || bad "$c (fine off Windows)"
 done
+if ! command -v jq >/dev/null 2>&1; then
+  if command -v powershell.exe >/dev/null 2>&1 || command -v powershell >/dev/null 2>&1; then
+    ok "jq missing but PowerShell covers hook-input JSON reads (json-lib.sh fallback)"
+  else
+    bad "jq missing AND no PowerShell — hook input JSON cannot be read at all"
+  fi
+fi
 
 say "plugin data dir"
 # The hook environment and an interactive shell do not necessarily agree on
