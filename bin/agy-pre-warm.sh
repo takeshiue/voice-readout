@@ -9,6 +9,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ "${1:-}" = "__prewarm_worker" ]; then
   source "$SCRIPT_DIR/tts-lib.sh"
   
+  # Exit immediately if stopped or disabled
+  if [ -e "$STOP_SWITCH_FILE" ] || ! is_enabled STOP_READOUT; then
+    exit 0
+  fi
+
+  # 0. Cancel any active readouts from previous turn so they don't speak over new input
+  cancel_active_readouts
+  
   # 1. Pre-acquire wake lock in background
   command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock >/dev/null 2>&1 || true
   
@@ -20,8 +28,8 @@ if [ "${1:-}" = "__prewarm_worker" ]; then
   date +%s > "$ONDEVICE_LASTSPOKE_FILE" 2>/dev/null || true
   
   # 4. Pre-copy a random filler clip to scratch dir so it's ready in memory
-  local termux_home="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}"
-  local scratch_dir="$termux_home/.voice-readout-tmp"
+  termux_home="${VOICE_READOUT_TERMUX_HOME:-/data/data/com.termux/files/home}"
+  scratch_dir="$termux_home/.voice-readout-tmp"
   mkdir -p "$scratch_dir" 2>/dev/null && chmod 700 "$scratch_dir" 2>/dev/null || true
   
   # Pick and pre-stage next filler
@@ -34,6 +42,7 @@ if [ "${1:-}" = "__prewarm_worker" ]; then
 fi
 
 # PreInvocation hook must return {} immediately to unblock user input
+source "$SCRIPT_DIR/tts-lib.sh"
 SELF="$SCRIPT_DIR/$(basename "$0")"
 VOICE_READOUT_GUARD=1 setsid "$SELF" __prewarm_worker >/dev/null 2>&1 </dev/null &
 disown 2>/dev/null || true

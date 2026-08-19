@@ -9,12 +9,42 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ "${1:-}" = "__worker" ]; then
   source "$SCRIPT_DIR/tts-lib.sh"
   INPUT_FILE="${2:-}"
-  trap 'rm -f "$INPUT_FILE"' EXIT
+  WORKER_PID="${BASHPID:-$$}"
+  printf '%s' "$WORKER_PID" > "${PLUGIN_DATA_DIR}/voice-readout-worker.pid" 2>/dev/null || true
+  trap 'readout_speaking_end; rm -f "$INPUT_FILE"; rm -f "${PLUGIN_DATA_DIR}/voice-readout-worker.pid" 2>/dev/null' EXIT
 
-  is_enabled STOP_READOUT || exit 0
+  # If readout is stopped or disabled, exit immediately without playing any fillers
+  if [ -e "$STOP_SWITCH_FILE" ] || ! is_enabled STOP_READOUT; then
+    rm -f "$PLUGIN_DATA_DIR/voice-readout-staged-filler" 2>/dev/null
+    exit 0
+  fi
   [ -f "$INPUT_FILE" ] || exit 0
 
   READOUT_MODE="$(get_readout_mode)"
+
+  # Extract and clean text using the cross-platform Python core module
+  CLEANED="$(python3 "$SCRIPT_DIR/agy_readout.py" parse-hook --mode "$READOUT_MODE" --file "$INPUT_FILE" 2>/dev/null)"
+  EXIT_CODE=$?
+
+  if [ $EXIT_CODE -ne 0 ] || [ -z "$CLEANED" ]; then
+    log skip "no speech text extracted from agy transcript"
+    exit 0
+  fi
+
+  LAST_SPOKEN_FILE="${PLUGIN_DATA_DIR}/voice-readout-last-spoken.txt"
+  if [ -f "$LAST_SPOKEN_FILE" ]; then
+    LAST_SPOKEN="$(cat "$LAST_SPOKEN_FILE" 2>/dev/null)"
+    if [ "$CLEANED" = "$LAST_SPOKEN" ]; then
+      exit 0
+    fi
+  fi
+  printf '%s' "$CLEANED" > "$LAST_SPOKEN_FILE" 2>/dev/null || true
+
+  if [ $EXIT_CODE -eq 2 ]; then
+    # Code-only response
+    play_notice_clip "$CODE_ONLY_CLIP" nowait || speak "$READOUT_CODE_ONLY_NOTICE" 60 summary
+    exit 0
+  fi
 
   # Ultra-fast instant filler audio playback (from pre-warmed stage if available)
   STAGED_FILLER="$(cat "$PLUGIN_DATA_DIR/voice-readout-staged-filler" 2>/dev/null)"
@@ -29,22 +59,6 @@ if [ "${1:-}" = "__worker" ]; then
     fi
   fi
 
-  # Extract and clean text using the cross-platform Python core module
-  CLEANED="$(python3 "$SCRIPT_DIR/agy_readout.py" parse-hook --mode "$READOUT_MODE" --file "$INPUT_FILE" 2>/dev/null)"
-  EXIT_CODE=$?
-
-  if [ $EXIT_CODE -eq 2 ]; then
-    # Code-only response
-    play_notice_clip "$CODE_ONLY_CLIP" nowait || speak "$READOUT_CODE_ONLY_NOTICE" 60 summary
-    exit 0
-  fi
-
-  if [ $EXIT_CODE -ne 0 ] || [ -z "$CLEANED" ]; then
-    log skip "no speech text extracted from agy transcript"
-    exit 0
-  fi
-
-  trap readout_speaking_end EXIT
   readout_speaking_begin || exit 0
 
   if [ "$READOUT_MODE" = "full" ]; then
@@ -58,9 +72,31 @@ fi
 # Stop hooks require valid JSON output. Hand a 0600 file to the detached worker.
 source "$SCRIPT_DIR/tts-lib.sh"
 INPUT_JSON="$(cat)"
+echo "$INPUT_JSON" >> /tmp/stop-payload.log
 
 # Guard against empty stdin
 if [ -z "$INPUT_JSON" ]; then
+  printf '{}\n'
+  exit 0
+fi
+
+# Check if this Stop hook was triggered by a user interrupt (Ctrl+C) or error
+TERMINATION_REASON="$(printf '%s' "$INPUT_JSON" | jq -r '.terminationReason // empty')"
+ERROR_MSG="$(printf '%s' "$INPUT_JSON" | jq -r '.error // empty')"
+
+if [[ "$TERMINATION_REASON" == *"interrupt"* ]] || \
+   [[ "$TERMINATION_REASON" == *"cancel"* ]] || \
+   [[ "$ERROR_MSG" == *"interrupt"* ]] || \
+   [[ "$ERROR_MSG" == *"cancel"* ]]; then
+  
+  # This is an abrupt exit!
+  # 1. Stop any currently playing audio instantly
+  "$SCRIPT_DIR/cancel.sh" >/dev/null 2>&1
+  
+  # 2. Play farewell greeting
+  echo '{}' | "$SCRIPT_DIR/session-farewell.sh" >/dev/null 2>&1
+  
+  # Return immediately without reading the partial text
   printf '{}\n'
   exit 0
 fi

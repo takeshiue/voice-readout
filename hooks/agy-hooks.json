@@ -3,25 +3,25 @@
     "PreInvocation": [
       {
         "type": "command",
-        "command": "${PLUGIN_ROOT}/bin/agy-pre-warm.sh"
+        "command": "/root/dev/voice-readout/bin/agy-pre-warm.sh"
       }
     ],
     "Stop": [
       {
         "type": "command",
-        "command": "${PLUGIN_ROOT}/bin/agy-summarize-and-speak.sh"
+        "command": "/root/dev/voice-readout/bin/agy-summarize-and-speak.sh"
       }
     ],
     "SessionStart": [
       {
         "type": "command",
-        "command": "${PLUGIN_ROOT}/bin/agy-session-start.sh"
+        "command": "/root/dev/voice-readout/bin/agy-session-start.sh"
       }
     ],
     "SessionEnd": [
       {
         "type": "command",
-        "command": "${PLUGIN_ROOT}/bin/agy-session-end.sh"
+        "command": "/root/dev/voice-readout/bin/agy-session-end.sh"
       }
     ]
   }

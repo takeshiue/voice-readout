@@ -86,8 +86,11 @@
 
 ---
 
-## 5. 今後の展開（Windows agy 対応時のチェックポイント）
+## 5. 今後の展開・TODO
 
+- **【TODO】Antigravity CLI (`agy`) 向け AI 要約機能の実装**:
+  - Claude Code の `haiku` 要約機能と同様に、`READOUT_MODE=summary` 選択時にバックグラウンドで軽量 LLM（Gemini Flash API 等）を非同期呼び出しして 1 文の自然な話し言葉に要約する機能を Python コア (`agy_readout.py`) に実装する。
+  - 現在のルールベース冒頭切り出し（エクスセプト）を、真の AI 要約生成へアップグレードする。
 - `bin/agy_readout.py` が Windows（PowerShell / cmd）から直接呼ばれた場合でも動作するように、パス区切り文字（`os.path` / `pathlib`）やエンコーディング（UTF-8）に配慮して実装すること。
 - Windows の TTS（SAPI や PowerShell 停止ボタン）への切り替え口を Python 内に抽象化して用意しておくこと。
 

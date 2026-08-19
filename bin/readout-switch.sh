@@ -74,6 +74,18 @@ if [ -e "\$STOP_FILE" ]; then
     --button1 "停止する" --button1-action "sh \$0"
 else
   touch "\$STOP_FILE"
+  # Immediately halt all active playback and speech engines
+  termux-media-player stop >/dev/null 2>&1 || true
+  termux-tts-speak "" >/dev/null 2>&1 || true
+  pkill -9 -f "agy-summarize-and-speak.sh" >/dev/null 2>&1 || true
+  pkill -9 -f "summarize-and-speak.sh" >/dev/null 2>&1 || true
+  pkill -9 -f "codex-summarize-and-speak.sh" >/dev/null 2>&1 || true
+  pkill -9 -f "speak-text.sh" >/dev/null 2>&1 || true
+  pkill -9 -f "agy-pre-warm.sh" >/dev/null 2>&1 || true
+  pkill -9 -f "agy_readout.py" >/dev/null 2>&1 || true
+  pkill -9 -f "notify-speak.sh" >/dev/null 2>&1 || true
+  pkill -9 -f "session-greet.sh" >/dev/null 2>&1 || true
+  termux-wake-unlock >/dev/null 2>&1 || true
   termux-notification --id "\$NOTIF_ID" --title "voice-readout 読み上げ 停止中" \\
     --content "読み上げは止まっています。[再開する]で元に戻ります" --ongoing --priority low \\
     --button1 "再開する" --button1-action "sh \$0"
@@ -113,6 +125,9 @@ post_notification() {
 case "${1:-}" in
   stop)
     touch "$STOP_FILE" 2>/dev/null
+    HERE="$(cd "$(dirname "$0")" && pwd)"
+    source "$HERE/tts-lib.sh" 2>/dev/null || true
+    cancel_active_readouts 2>/dev/null || true
     post_notification
     echo "voice-readout: 読み上げ 停止中"
     ;;

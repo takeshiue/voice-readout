@@ -504,13 +504,23 @@ fi
 # Which plugin this row belongs to. Spelled in English rather than カタカナ:
 # that rule exists for text the TTS engines have to pronounce (they read
 # "voice-readout" as レッドアウト), and nothing here is ever spoken.
-seg 'voice readout'
-seg "$(printf 'greet %s%s' \
-  "$(icon "$(cfg STARTUP_GREETING)")" "$(icon "$(cfg SESSION_END_GREETING)")")"
-seg "$(printf 'notif %s %s' \
-  "$(icon "$(cfg NOTIFICATION_READOUT)")" "$(short_backend "$notif_backend")")"
-seg "$(printf 'resp %s %s%s' \
-  "$(icon "$(cfg STOP_READOUT)")" "$resp_mode" "$(short_backend "$resp_backend")")"
+if [ "$(cfg STATUSLINE_FORMAT)" = "compact" ]; then
+  seg 'vo-read'
+  seg "$(printf 'g:%s%s' \
+    "$(icon "$(cfg STARTUP_GREETING)")" "$(icon "$(cfg SESSION_END_GREETING)")")"
+  seg "$(printf 'n:%s%s' \
+    "$(icon "$(cfg NOTIFICATION_READOUT)")" "$(short_backend "$notif_backend")")"
+  seg "$(printf 'r:%s%s%s' \
+    "$(icon "$(cfg STOP_READOUT)")" "$resp_mode" "$(short_backend "$resp_backend")")"
+else
+  seg 'voice readout'
+  seg "$(printf 'greet %s%s' \
+    "$(icon "$(cfg STARTUP_GREETING)")" "$(icon "$(cfg SESSION_END_GREETING)")")"
+  seg "$(printf 'notif %s %s' \
+    "$(icon "$(cfg NOTIFICATION_READOUT)")" "$(short_backend "$notif_backend")")"
+  seg "$(printf 'resp %s %s%s' \
+    "$(icon "$(cfg STOP_READOUT)")" "$resp_mode" "$(short_backend "$resp_backend")")"
+fi
 
 # Chunk marker: shown ONLY while it is on. It is off almost always, so a
 # permanent segment would spend width on "off" every session — and the one

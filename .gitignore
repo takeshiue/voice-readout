@@ -22,3 +22,4 @@ generated-images/
 Thumbs.db
 *.swp
 *~
+__pycache__/

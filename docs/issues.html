@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voice Readout - 課題・イシュー一覧レポート</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --border: #334155;
+      --accent: #38bdf8;
+      --accent-hover: #0ea5e9;
+      --danger: #f43f5e;
+      --danger-bg: rgba(244, 63, 94, 0.15);
+      --warning: #fbbf24;
+      --warning-bg: rgba(251, 191, 36, 0.15);
+      --success: #34d399;
+      --success-bg: rgba(52, 211, 153, 0.15);
+      --info: #60a5fa;
+      --info-bg: rgba(96, 165, 250, 0.15);
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 16px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    header {
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    h1 {
+      font-size: 1.5rem;
+      color: var(--accent);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .subtitle {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+    .summary-card {
+      background: linear-gradient(135deg, #1e293b, #0f172a);
+      border: 1px solid var(--accent);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 24px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+    .summary-title {
+      font-size: 1.1rem;
+      font-weight: bold;
+      margin-bottom: 8px;
+      color: var(--accent);
+    }
+    .issue-card {
+      background-color: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 16px;
+      transition: transform 0.2s, border-color 0.2s;
+    }
+    .issue-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 12px;
+      gap: 8px;
+    }
+    .issue-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: bold;
+      padding: 4px 8px;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+    .badge-fixed {
+      background-color: var(--success-bg);
+      color: var(--success);
+      border: 1px solid var(--success);
+    }
+    .badge-pending {
+      background-color: var(--warning-bg);
+      color: var(--warning);
+      border: 1px solid var(--warning);
+    }
+    .badge-danger {
+      background-color: var(--danger-bg);
+      color: var(--danger);
+      border: 1px solid var(--danger);
+    }
+    .section-label {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-top: 10px;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .content-box {
+      background-color: rgba(0, 0, 0, 0.25);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 0.92rem;
+      margin-bottom: 8px;
+    }
+    .content-box code {
+      background-color: rgba(255, 255, 255, 0.1);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 0.85em;
+      color: #38bdf8;
+    }
+    footer {
+      margin-top: 32px;
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      padding-bottom: 24px;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>🔊 Voice Readout 課題・イシュー一覧</h1>
+    <div class="subtitle">更新日時: 2026-08-19 | 対象: voice-readout / agy / Claude / Termux</div>
+  </header>
+
+  <div class="summary-card">
+    <div class="summary-title">📌 全体サマリー</div>
+    <p>長文読み上げのテスト運用で発生した問題（Gemini 429制限、フォールバック時の挙動、オフ設定の漏れ、終了音）の現状と対応策を整理した一覧です。</p>
+  </div>
+
+  <!-- Issue 1 -->
+  <div class="issue-card">
+    <div class="issue-header">
+      <div class="issue-title">1. 外部TTS（Gemini等）失敗時にユーザーへ伝わらない</div>
+      <span class="badge badge-pending">改修対応中</span>
+    </div>
+    <div class="section-label">🔴 問題点</div>
+    <div class="content-box">
+      Gemini API の利用制限（HTTP 429）や混雑（503）が発生した際、ログに出力されるだけで、ユーザーの画面や通知バー、音声で状況が全く通知されず、突然機械音（ローカル音声）に変わるため原因不明に見えてしまう。
+    </div>
+    <div class="section-label">💡 対策・解決案</div>
+    <div class="content-box">
+      <code>termux-notification</code> を利用し、エラー発生時に Android 通知バーへ「⚠️ Gemini 429: 利用制限中。約2分間ローカルで読み上げます」と理由と復旧見込みを即時通知する。
+    </div>
+  </div>
+
+  <!-- Issue 2 -->
+  <div class="issue-card">
+    <div class="issue-header">
+      <div class="issue-title">2. ローカルへの切り替え後、音声が「細切れ」で途切れる</div>
+      <span class="badge badge-pending">改修対応中</span>
+    </div>
+    <div class="section-label">🔴 問題点</div>
+    <div class="content-box">
+      クラウド生成が失敗してローカル（Termux TTS）にフォールバックした際、分割された文を1文ずつループ再生していたため、「1文再生 → 数秒の沈黙 → 次の1文再生」と短くブツブツ途切れる最悪のUXになっていた。
+    </div>
+    <div class="section-label">💡 対策・解決案</div>
+    <div class="content-box">
+      クラウド失敗時は、残りの文（ユニット）をすべて一つの文章に再結合（join）し、1回のローカルTTSで最後まで一気にスムーズに読み上げる。
+    </div>
+  </div>
+
+  <!-- Issue 3 -->
+  <div class="issue-card">
+    <div class="issue-header">
+      <div class="issue-title">3. レート制限（429）中に無駄なAPI再試行を繰り返す</div>
+      <span class="badge badge-pending">改修対応中</span>
+    </div>
+    <div class="section-label">🔴 問題点</div>
+    <div class="content-box">
+      一度 429（制限超過）になってもクールダウン機構がないため、毎回失敗すると分かっているAPIを叩いて数秒待たされる無駄が発生していた。
+    </div>
+    <div class="section-label">💡 対策・解決案</div>
+    <div class="content-box">
+      サーキットブレーカーを導入。429発生時は「2分間クラウドAPIをスキップして即座にローカルで読み上げ」を行い、無駄な待機と通信を完全排除する。
+    </div>
+  </div>
+
+  <!-- Issue 4 -->
+  <div class="issue-card">
+    <div class="issue-header">
+      <div class="issue-title">4. 音声オフ時にも相槌音声（フィラー）が鳴ってしまう</div>
+      <span class="badge badge-fixed">✅ 修正完了</span>
+    </div>
+    <div class="section-label">🔴 問題点</div>
+    <div class="content-box">
+      プレウォームされたフィラーを再生する際、停止スイッチのチェックを介さずに直接 <code>termux-media-player</code> を呼んでいたため、読み上げオフ時も相槌だけが鳴っていた。
+    </div>
+    <div class="section-label">💡 対策・修正内容</div>
+    <div class="content-box">
+      <code>agy-summarize-and-speak.sh</code> および <code>agy-pre-warm.sh</code> の最上部に停止スイッチ判定を配置し、オフ時はフィラー含め即座に完全沈黙するよう修正済み。
+    </div>
+  </div>
+
+  <!-- Issue 5 -->
+  <div class="issue-card">
+    <div class="issue-header">
+      <div class="issue-title">5. 終了時の音声（「またね」）が鳴らない</div>
+      <span class="badge badge-fixed">✅ 原因特定・パイプ修正済</span>
+    </div>
+    <div class="section-label">🔴 問題点・原因</div>
+    <div class="content-box">
+      ① 読み上げオフ時は安全のため終了音もミュートされる仕様。<br>
+      ② <code>agy-session-end.sh</code> で標準入力のパイプ渡しが抜けていた。<br>
+      ③ AGY（Antigravity CLI）のフック仕様（<code>hooks.json</code>）には現時点で <code>SessionEnd</code> イベントが存在しない。
+    </div>
+    <div class="section-label">💡 対策・対応内容</div>
+    <div class="content-box">
+      パイプの受け渡しは修正完了。Claude Code終了時や読み上げオン時は正常に鳴る状態。AGYでのセッション終了検知は将来のCLI機能拡張またはシェル監視で対応。
+    </div>
+  </div>
+
+  <footer>
+    Voice Readout Issue Tracker &copy; 2026
+  </footer>
+
+</body>
+</html>

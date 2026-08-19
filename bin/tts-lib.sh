@@ -783,6 +783,47 @@ readout_is_speaking() {
   return 0
 }
 
+
+# Immediately cancel all running speech readouts, media playback, and queues
+cancel_active_readouts() {
+  # 1. Stop media player and flush on-device TTS immediately
+  command -v termux-media-player >/dev/null 2>&1 && termux-media-player stop >/dev/null 2>&1 || true
+  command -v termux-tts-speak >/dev/null 2>&1 && termux-tts-speak "" >/dev/null 2>&1 || true
+
+  # 2. Terminate registered worker PID
+  local pid_file="${PLUGIN_DATA_DIR}/voice-readout-worker.pid"
+  if [ -f "$pid_file" ]; then
+    local wpid
+    wpid="$(cat "$pid_file" 2>/dev/null)"
+    if [ -n "$wpid" ] && [ "$wpid" -gt 1 ] 2>/dev/null; then
+      command -v pkill >/dev/null 2>&1 && pkill -9 -P "$wpid" 2>/dev/null || true
+      kill -9 "$wpid" 2>/dev/null || true
+    fi
+    rm -f "$pid_file" 2>/dev/null
+  fi
+
+  # 3. Terminate all background speech workers and helper processes
+  pkill -9 -f "agy-summarize-and-speak.sh" >/dev/null 2>&1 || true
+  pkill -9 -f "summarize-and-speak.sh" >/dev/null 2>&1 || true
+  pkill -9 -f "codex-summarize-and-speak.sh" >/dev/null 2>&1 || true
+  pkill -9 -f "speak-text.sh" >/dev/null 2>&1 || true
+  pkill -9 -f "agy-pre-warm.sh" >/dev/null 2>&1 || true
+  pkill -9 -f "agy_readout.py" >/dev/null 2>&1 || true
+  pkill -9 -f "notify-speak.sh" >/dev/null 2>&1 || true
+  pkill -9 -f "session-greet.sh" >/dev/null 2>&1 || true
+
+  # 4. Clear queue, staged fillers, speaking markers, and locks
+  rm -rf "${READOUT_QUEUE_DIR}"/* 2>/dev/null || true
+  rm -f "$SPEAKING_MARKER_FILE" 2>/dev/null || true
+  rm -f "$ONDEVICE_LOCK_FILE" 2>/dev/null || true
+  rm -f "$PLUGIN_DATA_DIR/voice-readout-staged-filler" 2>/dev/null || true
+
+  # 5. Release wake lock
+  command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock 2>/dev/null || true
+  ondevice_wake_unlock_held 2>/dev/null || true
+  return 0
+}
+
 # Longest text the on-device engine reliably finishes — see the ceiling check
 # in speak() for how this number was arrived at. Exposed as a function so
 # callers that would rather shorten their text than be refused (the Stop
@@ -1896,19 +1937,17 @@ gen_cloud() {
   # says so; it is a valid, complete, short file, and the pipeline played it and
   # moved on. The listener hears the readout cut mid-sentence.
   #
-  # Length is the only signal available without listening to it. Compare against
-  # the reading pace the plugin is already asking every engine for
-  # (READOUT_SPEED, 1.0 = 300 characters a minute) and regenerate once when the
-  # audio comes back far shorter than the text could possibly be read in.
-  # The threshold is deliberately loose: engines run 5-30% faster than the pace
-  # they are asked for, and the two truncated chunks seen so far came in at 59%
-  # and 60% against 79-98% for every healthy one. Erring loose costs one extra
-  # generation; erring tight costs the listener the end of a sentence.
-  local ratio; ratio="$(get_tuning_dec_for CLOUD_MIN_AUDIO_RATIO "$backend" 0.65)"
-  if ! _cloud_audio_looks_complete "$out" "${#text}" "$ratio"; then
-    log fallback "${backend}: audio came back short for ${#text} chars, regenerating once"
+  # Length validation: protect against both truncated audio (under 65% of expected duration)
+  # and anomalous repeat/prompt-leak audio (over 135% of expected duration).
+  # If anomalous, drop immediately without costly regeneration latency so the caller
+  # can instantly fall back to ondevice speech without dead air.
+  local min_ratio max_ratio
+  min_ratio="$(get_tuning_dec_for CLOUD_MIN_AUDIO_RATIO "$backend" 0.65)"
+  max_ratio="$(get_tuning_dec_for CLOUD_MAX_AUDIO_RATIO "$backend" 1.35)"
+  if ! _cloud_audio_looks_complete "$out" "${#text}" "$min_ratio" "$max_ratio" "$backend"; then
+    log fallback "${backend}: audio duration anomalous for ${#text} chars, dropping for instant ondevice fallback"
     rm -f "$out" "${out%.wav}.pcm" "${out%.mp3}-raw.mp3" 2>/dev/null
-    _gen_cloud_once "$backend" "$text" "$out" || return 1
+    return 1
   fi
 
   _append_chunk_marker "$out"
@@ -1925,18 +1964,28 @@ _gen_cloud_once() {
   esac
 }
 
-# True unless FILE is far shorter than CHARS characters could be read in. An
-# unreadable duration (no ffprobe, odd container) returns true: this guards
-# against a truncated generation, not against the probe, and a probe that
-# cannot answer must not cost a second API call on every chunk.
+# True if FILE duration is within [expected * min_ratio, expected * max_ratio].
+# Calculates expected duration using backend-specific natural speaking rates scaled by READOUT_SPEED.
 _cloud_audio_looks_complete() {
-  local file="$1" chars="$2" ratio="$3" dur
+  local file="$1" chars="$2" min_r="$3" max_r="$4" backend="$5" dur base_cps
   [ "$chars" -gt 0 ] 2>/dev/null || return 0
   dur="$(_audio_duration "$file")"
   [ -n "$dur" ] || return 0
+
+  # Base characters per second per backend at 1.0x pace (approx 360 chars/min = 6.0 cps)
+  case "$backend" in
+    gemini)     base_cps=6.0 ;;
+    inworld)    base_cps=6.0 ;;
+    elevenlabs) base_cps=6.0 ;;
+    fishaudio)  base_cps=6.0 ;;
+    *)          base_cps=6.0 ;;
+  esac
+
   awk "BEGIN{ speed=$(get_tuning READOUT_SPEED 1.2); if(speed<=0) speed=1.0;
-              expected = $chars / (5.0 * speed);
-              exit !($dur >= expected * $ratio) }"
+              expected = $chars / ($base_cps * speed);
+              min_d = expected * $min_r;
+              max_d = expected * $max_r;
+              exit !($dur >= min_d && $dur <= max_d) }"
 }
 
 # The exact text speak_cloud_chunked would generate FIRST for TEXT. Used by the

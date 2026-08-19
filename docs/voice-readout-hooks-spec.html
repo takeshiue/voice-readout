@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voice Readout フック仕様書・アーキテクチャ設計書</title>
+  <style>
+    :root {
+      --bg-color: #0f172a;
+      --card-bg: #1e293b;
+      --card-border: #334155;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-blue: #38bdf8;
+      --accent-purple: #c084fc;
+      --accent-green: #4ade80;
+      --accent-amber: #fbbf24;
+      --accent-rose: #fb7185;
+      --code-bg: #090d16;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      line-height: 1.6;
+      padding: 16px;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    header {
+      padding: 24px 0 16px;
+      border-bottom: 1px solid var(--card-border);
+      margin-bottom: 24px;
+    }
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: var(--accent-blue);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      margin-top: 4px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .badge-blue { background: rgba(56, 189, 248, 0.2); color: var(--accent-blue); border: 1px solid rgba(56, 189, 248, 0.4); }
+    .badge-green { background: rgba(74, 222, 128, 0.2); color: var(--accent-green); border: 1px solid rgba(74, 222, 128, 0.4); }
+    .badge-amber { background: rgba(251, 191, 36, 0.2); color: var(--accent-amber); border: 1px solid rgba(251, 191, 36, 0.4); }
+    .badge-purple { background: rgba(192, 132, 252, 0.2); color: var(--accent-purple); border: 1px solid rgba(192, 132, 252, 0.4); }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+    }
+    .card h2 {
+      font-size: 1.2rem;
+      color: var(--text-main);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 8px;
+    }
+    .card h3 {
+      font-size: 1.0rem;
+      color: var(--accent-purple);
+      margin: 14px 0 8px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      font-size: 0.85rem;
+    }
+    th, td {
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--card-border);
+    }
+    th {
+      background: rgba(15, 23, 42, 0.6);
+      color: var(--accent-blue);
+      font-weight: 600;
+    }
+    tr:last-child td { border-bottom: none; }
+
+    .alert {
+      padding: 12px 14px;
+      border-radius: 8px;
+      margin: 10px 0;
+      font-size: 0.85rem;
+    }
+    .alert-warning {
+      background: rgba(251, 191, 36, 0.1);
+      border: 1px solid rgba(251, 191, 36, 0.4);
+      color: #fde68a;
+    }
+    .alert-success {
+      background: rgba(74, 222, 128, 0.1);
+      border: 1px solid rgba(74, 222, 128, 0.4);
+      color: #bbf7d0;
+    }
+
+    .flow-step {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 12px;
+      align-items: flex-start;
+    }
+    .step-num {
+      background: var(--accent-blue);
+      color: #0f172a;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      font-size: 0.75rem;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+    .step-content {
+      flex: 1;
+    }
+    .step-title {
+      font-weight: 600;
+      color: var(--text-main);
+      font-size: 0.9rem;
+    }
+    .step-desc {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div style="display: flex; gap: 6px; margin-bottom: 6px;">
+        <span class="badge badge-blue">Specification</span>
+        <span class="badge badge-purple">Antigravity / Claude / Codex</span>
+      </div>
+      <h1>🔊 Voice Readout フック仕様書</h1>
+      <p class="subtitle">ライフサイクルイベント・フック重複防止・音声長ガード設計仕様</p>
+    </header>
+
+    <!-- 1. Antigravity CLI フック仕様 -->
+    <div class="card">
+      <h2>🤖 1. Antigravity CLI (agy) フック仕様</h2>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px;">
+        agy (Antigravity CLI) は、AIの実行ループ（ツール使用や推論）に合わせて以下の <strong>5種類</strong> のフックを提供しています。<br>
+        ※注意: Claude Codeにあるような <code>SessionStart</code> や <code>SessionEnd</code> といったCLI自体の起動・終了を検知するフックは <strong>agy には存在しません。</strong>
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>イベント名</th>
+            <th>発火タイミング</th>
+            <th>主な用途・仕様</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="badge badge-blue">PreToolUse</span></td>
+            <td>ツールが実行される直前</td>
+            <td>コマンドの実行許可/拒否の判定、引数の書き換え、セキュリティ監査など</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-blue">PostToolUse</span></td>
+            <td>ツールが実行された直後</td>
+            <td>ツール実行後のクリーンアップ、ログ保存、結果の自動補正など</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-blue">PreInvocation</span></td>
+            <td>AIを呼び出す（推論開始）直前</td>
+            <td>プロンプトへの追加コンテキスト注入（※当プラグインでは音声のプリウォームに利用）</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-blue">PostInvocation</span></td>
+            <td>AIの呼び出し（推論）が完了した直後</td>
+            <td>出力結果の検査、強制的な継続/停止のコントロールなど</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-green">Stop</span></td>
+            <td>AIの実行ループ終了時（ターン完了時）</td>
+            <td>最終チェック、完了条件の確認（※当プラグインではここで応答テキストを抽出して読み上げを実行）</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>⚠️ 二重読み上げ防止（重複登録の注意点）</h3>
+      <div class="alert alert-warning">
+        <strong>マージ仕様に関する警告:</strong><br>
+        Antigravity CLI は <code>~/.gemini/config/hooks.json</code>（グローバル）と <code>.agents/hooks.json</code>（プロジェクト）の両方を探索し、同一フックをマージして <strong>2回順次実行</strong> します。<br>
+        2重読み上げを防ぐため、登録は <strong>グローバル側（<code>~/.gemini/config/hooks.json</code>）に単一集約</strong> します。
+      </div>
+    </div>
+
+    <!-- 2. Claude Code & Codex フック仕様 -->
+    <div class="card">
+      <h2>🌐 2. 他の CLI（Claude Code / Codex）フック仕様</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>対象 CLI</th>
+            <th>イベント名</th>
+            <th>実行スクリプト</th>
+            <th>役割</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td rowspan="4"><strong>Claude Code</strong></td>
+            <td><code>SessionStart</code></td>
+            <td><code>bin/session-start.sh</code></td>
+            <td>起動時の挨拶音声（「ボイスリードアウト、準備できたよ」）</td>
+          </tr>
+          <tr>
+            <td><code>SessionEnd</code></td>
+            <td><code>bin/session-farewell.sh</code></td>
+            <td>終了音声クリップ再生（「またね」）</td>
+          </tr>
+          <tr>
+            <td><code>Notification</code></td>
+            <td><code>bin/notify-speak.sh</code></td>
+            <td>権限確認・待機プロンプトの読み上げ</td>
+          </tr>
+          <tr>
+            <td><code>Stop</code></td>
+            <td><code>bin/summarize-and-speak.sh</code></td>
+            <td>Haiku による要約 or 全文読み上げ</td>
+          </tr>
+          <tr>
+            <td><strong>Codex</strong></td>
+            <td><code>Stop</code></td>
+            <td><code>bin/codex-summarize-and-speak.sh</code></td>
+            <td>Codex 応答の読み上げ</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 3. 音声長判定と即時ローカルフォールバック仕様 -->
+    <div class="card">
+      <h2>🛡️ 3. 音声長判定と即時ローカルフォールバック仕様</h2>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px;">
+        生成されたクラウド音声を安全レンジ（65%〜135%）で厳密にチェックし、異常時は再生成を待たずに破棄してローカル即発話へ切り替えます。
+      </p>
+
+      <div class="flow-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-title">想定発話時間 (expected) の正確な計算</div>
+          <div class="step-desc">
+            <code>expected = 文字数 / (各エンジンの基準速度 × 設定スピード係数)</code>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-title">末尾の無音自動トリミング (VAD / ffmpeg)</div>
+          <div class="step-desc">
+            APIが末尾に付着させた余分な無音（0.3秒以上の沈黙）を即座にカット。
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-title">上下両側ガード判定（65% 〜 135%）</div>
+          <table style="margin-top: 6px;">
+            <tr>
+              <th>判定結果</th>
+              <th>検知された状態</th>
+              <th>システムの処理</th>
+            </tr>
+            <tr>
+              <td><strong>＜ 65%</strong>（短すぎる）</td>
+              <td>通信途切れ・文章欠落</td>
+              <td style="color: var(--accent-rose);">❌ クラウド音声を即破棄 ➡ <strong>ローカルTTSで即発話</strong></td>
+            </tr>
+            <tr>
+              <td><strong>65% 〜 135%</strong></td>
+              <td>正常な音声</td>
+              <td style="color: var(--accent-green);">✅ <strong>クラウド音声を高音質再生</strong></td>
+            </tr>
+            <tr>
+              <td><strong>＞ 135%</strong>（長すぎる）</td>
+              <td>2回繰り返し読み・指示文誤読</td>
+              <td style="color: var(--accent-rose);">❌ クラウド音声を即破棄 ➡ <strong>ローカルTTSで即発話</strong></td>
+            </tr>
+          </table>
+        </div>
+      </div>
+
+      <div class="alert alert-success" style="margin-top: 12px;">
+        <strong>沈黙ゼロ化のメリット:</strong><br>
+        異常音声を再生成（5〜10秒待ち）せず、即座に捨ててローカルで鳴らすため、<strong>ユーザーの耳に届く音声が一切途切れずスムーズに継続</strong>します。
+      </div>
+    </div>
+
+    <!-- 4. 黄金パラメータ一覧 -->
+    <div class="card">
+      <h2>⚡ 4. 確立された黄金パラメータ一覧</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>パラメータ名</th>
+            <th>設定値</th>
+            <th>効果</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>HYBRID_MIN_ONDEVICE_CHARS</code></td>
+            <td><code>90</code></td>
+            <td>ローカル冒頭文字数（約15〜20秒発話でクラウドの生成時間を完全カバー）</td>
+          </tr>
+          <tr>
+            <td><code>TTS_CHUNK_CHARS</code></td>
+            <td><code>90</code></td>
+            <td>自走スイートスポット（再生時間 13.5秒 ＞ 生成時間 12.1秒）</td>
+          </tr>
+          <tr>
+            <td><code>HYBRID_PREPLAY_LEAD</code></td>
+            <td><code>0.60 秒</code></td>
+            <td>ローカル ➡ クラウド引き継ぎ時の先行キック（起動ラグ相殺）</td>
+          </tr>
+          <tr>
+            <td><code>CLOUD_PLAY_LEAD</code></td>
+            <td><code>0.75 秒</code></td>
+            <td>クラウドチャンク間の先行キック（文末情感ポーズ相殺）</td>
+          </tr>
+          <tr>
+            <td><code>READOUT_SPEED</code></td>
+            <td><code>1.3</code></td>
+            <td>全体基準発話速度インデックス</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <footer style="text-align: center; color: var(--text-muted); font-size: 0.75rem; padding: 16px 0;">
+      Voice Readout System &bull; Generated for Mobile & Android Storage
+    </footer>
+  </div>
+</body>
+</html>
