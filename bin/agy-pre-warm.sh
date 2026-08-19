@@ -15,7 +15,7 @@ if [ "${1:-}" = "__prewarm_worker" ]; then
   fi
 
   # 0. Cancel any active readouts from previous turn so they don't speak over new input
-  cancel_active_readouts
+  # cancel_active_readouts removed per user request: allow previous readouts to finish naturally
   
   # 1. Pre-acquire wake lock in background
   command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock >/dev/null 2>&1 || true
