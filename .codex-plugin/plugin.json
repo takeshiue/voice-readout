@@ -1,6 +1,6 @@
 {
   "name": "voice-readout",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Codexの応答と許可確認をTermux/Androidで読み上げるプラグイン",
   "author": { "name": "uematsu" },
   "hooks": "./hooks/codex-hooks.json"
