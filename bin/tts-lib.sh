@@ -1761,8 +1761,8 @@ _cloud_scratch_dir() {
 _cloud_audio_path() {
   local d; d="$(_cloud_scratch_dir)" || return 1
   case "$1" in
-    fishaudio) printf '%s/vr-%s-%s.mp3' "$d" "$VOICE_READOUT_RUN_ID" "$2" ;;
-    *)         printf '%s/vr-%s-%s.wav' "$d" "$VOICE_READOUT_RUN_ID" "$2" ;;
+    elevenlabs|fishaudio) printf '%s/vr-%s-%s.mp3' "$d" "$VOICE_READOUT_RUN_ID" "$2" ;;
+    *)          printf '%s/vr-%s-%s.wav' "$d" "$VOICE_READOUT_RUN_ID" "$2" ;;
   esac
 }
 
@@ -1884,27 +1884,11 @@ gen_elevenlabs() {
   filters=""
   case "$gain" in  ''|1|1.0|1.00) ;; *) filters="volume=${gain}" ;; esac
   case "$tempo" in ''|1|1.0|1.00) ;; *) filters="${filters:+${filters},}atempo=${tempo}" ;; esac
-  
-  # Always transcode ElevenLabs output to WAV because Android MediaPlayer is too slow at loading MP3s.
-  # The input ($raw) is MP3 from ElevenLabs, but we want the final output ($out) to be a WAV
-  # to eliminate the huge (2~6 second) playback startup latency when passing MP3 to Termux:API.
-  if command -v ffmpeg >/dev/null 2>&1; then
-    if [ -n "$filters" ]; then
-      ffmpeg -y -i "$raw" -af "$filters" -ar 24000 -ac 1 "$out" -loglevel error 2>/dev/null && [ -s "$out" ]
-    else
-      ffmpeg -y -i "$raw" -ar 24000 -ac 1 "$out" -loglevel error 2>/dev/null && [ -s "$out" ]
-    fi
-    local ffmpeg_rc=$?
-    if [ "$ffmpeg_rc" -eq 0 ]; then
-      rm -f "$raw"
-    else
-      log error "elevenlabs TTS: ffmpeg failed to build wav"
-      rm -f "$raw" "$out"
-      return 1
-    fi
+  if [ -n "$filters" ] && command -v ffmpeg >/dev/null 2>&1 \
+     && ffmpeg -y -i "$raw" -af "$filters" "$out" -loglevel error 2>/dev/null && [ -s "$out" ]; then
+    rm -f "$raw"
   else
-    log error "elevenlabs TTS needs ffmpeg to transcode mp3 to wav"
-    return 1
+    mv -f "$raw" "$out"
   fi
   return 0
 }
