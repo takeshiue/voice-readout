@@ -2209,7 +2209,19 @@ _play_chunk_marker() {
   # measurement cue on a different audio path from the audio being measured,
   # which is the sort of confound that makes a number untrustworthy.
   if command -v termux-media-player >/dev/null 2>&1; then
-    termux-media-player play "$clip" >/dev/null 2>&1
+    # Android's media service runs OUTSIDE this proot and cannot open a path
+    # inside it, so handing it $PLUGIN_ROOT_DIR/assets/... is a silent no-op:
+    # the command returns 0 and nothing comes out of the speaker. That is
+    # exactly why cloud chunks are written to _cloud_scratch_dir instead, and
+    # the cue needs the same treatment. Found 2026-08-20, after three runs
+    # where the on-device markers were simply absent from the recording while
+    # every check (config on, clip present, stop switch off, rc=0) passed.
+    # Staged once per clip; the copy is cheap next to a missed measurement.
+    local staged staged_dir
+    staged_dir="$(_cloud_scratch_dir)" || return 0
+    staged="${staged_dir}/marker-$(basename "$clip")"
+    [ -f "$staged" ] || cp -f "$clip" "$staged" 2>/dev/null || return 0
+    termux-media-player play "$staged" >/dev/null 2>&1
   elif command -v ffplay >/dev/null 2>&1; then
     ffplay -nodisp -autoexit -loglevel error "$clip" >/dev/null 2>&1
   fi

@@ -229,7 +229,7 @@ def main():
                     help="shorter silences are within-speech, not gaps (s)")
     ap.add_argument("--report-above", type=float, default=0.30,
                     help="only list silences at least this long (s)")
-    ap.add_argument("--marker-threshold", type=float, default=30.0,
+    ap.add_argument("--marker-threshold", type=float, default=45.0,
                     help="dB of narrowband concentration to call a tone present")
     ap.add_argument("--fail-over", type=float, default=None,
                     help="exit 1 if any paired gap exceeds this (s)")
@@ -282,10 +282,24 @@ def main():
 
     verdict = None
     if args.fail_over is not None:
+        # No markers means NO MEASUREMENT, which is not the same as a good one.
+        # Reporting "worst gap 0.00s, pass" off an empty list is how a broken
+        # recording becomes a green light -- it happened on 2026-08-20, when a
+        # run whose cues never reached the microphone reported a clean pass.
+        problems = []
+        if table and not markers:
+            problems.append("マーカーが1つも検出されなかった")
+        elif table and not pairs:
+            problems.append("開始・終了の対が1つも成立しなかった")
+        else:
+            opened = sum(1 for _, _, k in markers if k.endswith(".start"))
+            closed = sum(1 for _, _, k in markers if k.endswith(".end"))
+            if opened != closed:
+                problems.append(f"開始 {opened} と終了 {closed} が不一致（検出漏れ）")
         worst = max((d for _, d, _, _ in pairs), default=0.0)
-        verdict = worst <= args.fail_over
+        verdict = (not problems) and worst <= args.fail_over
         result["verdict"] = {"pass": bool(verdict), "worst_sec": round(float(worst), 3),
-                             "limit_sec": args.fail_over}
+                             "limit_sec": args.fail_over, "problems": problems}
 
     if args.json:
         import json
@@ -319,8 +333,11 @@ def main():
                   f"最大 {g['max_sec'] * 1000:.0f} ms / 合計 {g['total_sec']:.2f}s")
         if verdict is not None:
             v = result["verdict"]
-            print(("判定: 合格 — " if v["pass"] else "判定: 不合格 — ") +
-                  f"最大 {v['worst_sec']:.2f}s / 基準 {v['limit_sec']:.2f}s")
+            if v["problems"]:
+                print("判定: 測定不成立 — " + " / ".join(v["problems"]))
+            else:
+                print(("判定: 合格 — " if v["pass"] else "判定: 不合格 — ") +
+                      f"最大 {v['worst_sec']:.2f}s / 基準 {v['limit_sec']:.2f}s")
 
     return 0 if verdict is not False else 1
 
