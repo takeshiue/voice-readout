@@ -1,0 +1,170 @@
+{
+  "file": "/data/data/com.termux/files/home/.voice-readout-tmp/seam-20260820-155918-1-analysis.wav",
+  "duration_sec": 58.65,
+  "speech_threshold_db": -41.8,
+  "markers_found": [
+    {
+      "at": 10.615,
+      "until": 10.625,
+      "label": "ondevice.start"
+    },
+    {
+      "at": 11.39,
+      "until": 11.395,
+      "label": "cloud.start"
+    },
+    {
+      "at": 12.905,
+      "until": 12.925,
+      "label": "cloud.end"
+    },
+    {
+      "at": 16.34,
+      "until": 16.37,
+      "label": "cloud.end"
+    },
+    {
+      "at": 16.975,
+      "until": 16.99,
+      "label": "cloud.end"
+    },
+    {
+      "at": 40.205,
+      "until": 40.24,
+      "label": "cloud.start"
+    },
+    {
+      "at": 40.95,
+      "until": 40.955,
+      "label": "cloud.end"
+    },
+    {
+      "at": 45.685,
+      "until": 45.695,
+      "label": "cloud.start"
+    },
+    {
+      "at": 46.015,
+      "until": 46.04,
+      "label": "cloud.end"
+    },
+    {
+      "at": 52.395,
+      "until": 52.405,
+      "label": "cloud.start"
+    },
+    {
+      "at": 52.95,
+      "until": 52.955,
+      "label": "ondevice.end"
+    },
+    {
+      "at": 53.37,
+      "until": 53.39,
+      "label": "cloud.end"
+    },
+    {
+      "at": 54.02,
+      "until": 54.025,
+      "label": "cloud.end"
+    },
+    {
+      "at": 56.81,
+      "until": 56.815,
+      "label": "cloud.end"
+    }
+  ],
+  "paired_gaps": [
+    {
+      "at": 16.99,
+      "seconds": 23.215,
+      "from": "cloud",
+      "to": "cloud"
+    },
+    {
+      "at": 40.955,
+      "seconds": 4.73,
+      "from": "cloud",
+      "to": "cloud"
+    },
+    {
+      "at": 46.04,
+      "seconds": 6.355,
+      "from": "cloud",
+      "to": "cloud"
+    }
+  ],
+  "silences": [
+    {
+      "at": 0.0,
+      "seconds": 7.955,
+      "after": null
+    },
+    {
+      "at": 13.145,
+      "seconds": 0.545,
+      "after": "cloud.end"
+    },
+    {
+      "at": 15.27,
+      "seconds": 0.3,
+      "after": null
+    },
+    {
+      "at": 18.93,
+      "seconds": 6.415,
+      "after": null
+    },
+    {
+      "at": 27.575,
+      "seconds": 0.315,
+      "after": null
+    },
+    {
+      "at": 28.695,
+      "seconds": 11.475,
+      "after": null
+    },
+    {
+      "at": 42.69,
+      "seconds": 0.345,
+      "after": null
+    },
+    {
+      "at": 43.88,
+      "seconds": 0.315,
+      "after": null
+    },
+    {
+      "at": 45.995,
+      "seconds": 0.75,
+      "after": "cloud.end"
+    },
+    {
+      "at": 48.2,
+      "seconds": 0.395,
+      "after": null
+    },
+    {
+      "at": 51.785,
+      "seconds": 0.365,
+      "after": null
+    },
+    {
+      "at": 53.4,
+      "seconds": 5.25,
+      "after": "cloud.end"
+    }
+  ],
+  "summary": {
+    "count": 3,
+    "median_sec": 6.355,
+    "max_sec": 23.215,
+    "total_sec": 34.3
+  },
+  "verdict": {
+    "pass": false,
+    "worst_sec": 23.215,
+    "limit_sec": 1.5
+  }
+}

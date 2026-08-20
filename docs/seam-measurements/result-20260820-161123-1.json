@@ -1,0 +1,98 @@
+{
+  "file": "/data/data/com.termux/files/home/.voice-readout-tmp/seam-20260820-161123-1-analysis.wav",
+  "duration_sec": 60.715,
+  "speech_threshold_db": -41.3,
+  "markers_found": [
+    {
+      "at": 31.105,
+      "until": 31.22,
+      "label": "cloud.start"
+    },
+    {
+      "at": 42.04,
+      "until": 42.16,
+      "label": "cloud.start"
+    },
+    {
+      "at": 43.345,
+      "until": 43.35,
+      "label": "cloud.end"
+    },
+    {
+      "at": 47.875,
+      "until": 47.88,
+      "label": "cloud.end"
+    },
+    {
+      "at": 54.81,
+      "until": 54.91,
+      "label": "cloud.end"
+    }
+  ],
+  "paired_gaps": [],
+  "silences": [
+    {
+      "at": 0.0,
+      "seconds": 6.01,
+      "after": null
+    },
+    {
+      "at": 6.525,
+      "seconds": 0.84,
+      "after": null
+    },
+    {
+      "at": 13.295,
+      "seconds": 0.535,
+      "after": null
+    },
+    {
+      "at": 19.065,
+      "seconds": 7.045,
+      "after": null
+    },
+    {
+      "at": 28.345,
+      "seconds": 0.305,
+      "after": null
+    },
+    {
+      "at": 29.46,
+      "seconds": 1.605,
+      "after": null
+    },
+    {
+      "at": 31.495,
+      "seconds": 10.515,
+      "after": "cloud.start"
+    },
+    {
+      "at": 44.68,
+      "seconds": 0.355,
+      "after": null
+    },
+    {
+      "at": 47.885,
+      "seconds": 0.715,
+      "after": "cloud.end"
+    },
+    {
+      "at": 49.855,
+      "seconds": 0.47,
+      "after": null
+    },
+    {
+      "at": 54.96,
+      "seconds": 5.755,
+      "after": "cloud.end"
+    }
+  ],
+  "verdict": {
+    "pass": false,
+    "worst_sec": 0.0,
+    "limit_sec": 1.5,
+    "problems": [
+      "開始・終了の対が1つも成立しなかった"
+    ]
+  }
+}

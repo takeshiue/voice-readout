@@ -1,0 +1,140 @@
+{
+  "file": "/data/data/com.termux/files/home/.voice-readout-tmp/seam-20260820-160450-1-analysis.wav",
+  "duration_sec": 61.085,
+  "speech_threshold_db": -40.5,
+  "markers_found": [
+    {
+      "at": 31.265,
+      "until": 31.39,
+      "label": "cloud.start"
+    },
+    {
+      "at": 41.845,
+      "until": 41.955,
+      "label": "cloud.start"
+    },
+    {
+      "at": 55.46,
+      "until": 55.57,
+      "label": "cloud.end"
+    }
+  ],
+  "paired_gaps": [],
+  "silences": [
+    {
+      "at": 0.0,
+      "seconds": 0.455,
+      "after": null
+    },
+    {
+      "at": 0.46,
+      "seconds": 3.79,
+      "after": null
+    },
+    {
+      "at": 4.295,
+      "seconds": 3.495,
+      "after": null
+    },
+    {
+      "at": 12.98,
+      "seconds": 0.315,
+      "after": null
+    },
+    {
+      "at": 18.755,
+      "seconds": 0.525,
+      "after": null
+    },
+    {
+      "at": 19.4,
+      "seconds": 3.655,
+      "after": null
+    },
+    {
+      "at": 23.1,
+      "seconds": 0.945,
+      "after": null
+    },
+    {
+      "at": 24.17,
+      "seconds": 2.165,
+      "after": null
+    },
+    {
+      "at": 29.65,
+      "seconds": 1.585,
+      "after": null
+    },
+    {
+      "at": 31.785,
+      "seconds": 1.02,
+      "after": "cloud.start"
+    },
+    {
+      "at": 32.845,
+      "seconds": 1.32,
+      "after": null
+    },
+    {
+      "at": 34.175,
+      "seconds": 1.135,
+      "after": null
+    },
+    {
+      "at": 35.355,
+      "seconds": 6.45,
+      "after": null
+    },
+    {
+      "at": 44.385,
+      "seconds": 0.42,
+      "after": null
+    },
+    {
+      "at": 45.6,
+      "seconds": 0.31,
+      "after": null
+    },
+    {
+      "at": 47.9,
+      "seconds": 1.0,
+      "after": null
+    },
+    {
+      "at": 50.095,
+      "seconds": 0.455,
+      "after": null
+    },
+    {
+      "at": 50.885,
+      "seconds": 0.33,
+      "after": null
+    },
+    {
+      "at": 54.0,
+      "seconds": 0.33,
+      "after": null
+    },
+    {
+      "at": 55.61,
+      "seconds": 2.69,
+      "after": "cloud.end"
+    },
+    {
+      "at": 58.32,
+      "seconds": 1.205,
+      "after": null
+    },
+    {
+      "at": 59.535,
+      "seconds": 1.025,
+      "after": null
+    }
+  ],
+  "verdict": {
+    "pass": true,
+    "worst_sec": 0.0,
+    "limit_sec": 1.5
+  }
+}

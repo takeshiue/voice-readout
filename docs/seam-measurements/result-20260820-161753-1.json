@@ -1,0 +1,164 @@
+{
+  "file": "/data/data/com.termux/files/home/.voice-readout-tmp/seam-20260820-161753-1-analysis.wav",
+  "duration_sec": 60.925,
+  "speech_threshold_db": -40.8,
+  "markers_found": [
+    {
+      "at": 7.19,
+      "until": 7.365,
+      "label": "cloud.end"
+    },
+    {
+      "at": 7.205,
+      "until": 7.38,
+      "label": "ondevice.start"
+    },
+    {
+      "at": 23.23,
+      "until": 23.465,
+      "label": "ondevice.end"
+    },
+    {
+      "at": 25.645,
+      "until": 25.91,
+      "label": "ondevice.start"
+    },
+    {
+      "at": 25.645,
+      "until": 25.915,
+      "label": "cloud.end"
+    },
+    {
+      "at": 31.15,
+      "until": 31.27,
+      "label": "cloud.start"
+    },
+    {
+      "at": 33.82,
+      "until": 34.09,
+      "label": "ondevice.end"
+    },
+    {
+      "at": 42.025,
+      "until": 42.145,
+      "label": "cloud.start"
+    },
+    {
+      "at": 55.81,
+      "until": 55.9,
+      "label": "cloud.end"
+    }
+  ],
+  "paired_gaps": [
+    {
+      "at": 7.365,
+      "seconds": -0.16,
+      "from": "cloud",
+      "to": "ondevice"
+    },
+    {
+      "at": 23.465,
+      "seconds": 2.18,
+      "from": "ondevice",
+      "to": "ondevice"
+    },
+    {
+      "at": 25.915,
+      "seconds": 5.235,
+      "from": "cloud",
+      "to": "cloud"
+    },
+    {
+      "at": 34.09,
+      "seconds": 7.935,
+      "from": "ondevice",
+      "to": "cloud"
+    }
+  ],
+  "silences": [
+    {
+      "at": 0.0,
+      "seconds": 7.15,
+      "after": null
+    },
+    {
+      "at": 7.405,
+      "seconds": 1.595,
+      "after": "ondevice.start"
+    },
+    {
+      "at": 14.195,
+      "seconds": 0.545,
+      "after": null
+    },
+    {
+      "at": 19.985,
+      "seconds": 3.22,
+      "after": null
+    },
+    {
+      "at": 23.495,
+      "seconds": 2.135,
+      "after": "ondevice.end"
+    },
+    {
+      "at": 25.94,
+      "seconds": 1.675,
+      "after": "cloud.end"
+    },
+    {
+      "at": 33.4,
+      "seconds": 0.395,
+      "after": null
+    },
+    {
+      "at": 34.115,
+      "seconds": 7.88,
+      "after": "ondevice.end"
+    },
+    {
+      "at": 44.63,
+      "seconds": 0.37,
+      "after": null
+    },
+    {
+      "at": 47.93,
+      "seconds": 0.85,
+      "after": null
+    },
+    {
+      "at": 49.075,
+      "seconds": 0.355,
+      "after": null
+    },
+    {
+      "at": 50.435,
+      "seconds": 0.37,
+      "after": null
+    },
+    {
+      "at": 53.9,
+      "seconds": 0.355,
+      "after": null
+    },
+    {
+      "at": 55.935,
+      "seconds": 4.99,
+      "after": "cloud.end"
+    }
+  ],
+  "summary": {
+    "count": 4,
+    "median_sec": 3.708,
+    "max_sec": 7.935,
+    "total_sec": 15.19
+  },
+  "verdict": {
+    "pass": false,
+    "worst_sec": 7.935,
+    "limit_sec": 1.5,
+    "problems": [
+      "開始 4 と終了 5 が不一致（検出漏れ）"
+    ]
+  }
+}
