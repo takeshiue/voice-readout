@@ -26,10 +26,31 @@ NOTICE_CLIP="${PLUGIN_ROOT_DIR}/assets/overflow-notice.wav"
 # spoken between the verbatim opening and the summary. Pre-rendered (Gemini 3.1
 # Flash TTS Preview, Aoede) so it's instant and consistent instead of live TTS.
 BRIDGE_CLIP="${PLUGIN_ROOT_DIR}/assets/summary-bridge.wav"
-# Diagnostic cue played at each cloud chunk boundary when CHUNK_MARKER is on, so
-# the split points are audible (speak_cloud_chunked). Default off: it is a
-# listening aid for checking chunking/handoff, not part of normal readout.
+# Diagnostic cues played at chunk boundaries when CHUNK_MARKER is on, so the
+# split points are audible (speak_cloud_chunked). Default off: a listening aid
+# for checking chunking/handoff, not part of normal readout.
+#
+# Two tones, not one, and both 40ms rather than the 775ms clip these replaced
+# (2026-08-20). Two reasons, in order of importance:
+#
+# 1. LENGTH. The cue is appended INTO the audio being measured, so every
+#    millisecond of it lands inside the seam it is supposed to be marking. At
+#    775ms the marker was a fifth of a typical seam — measuring the ruler, not
+#    the gap. 40ms is 19x shorter and disappears into the noise of what we care
+#    about (seams run 0.7-3.5s, measured).
+# 2. PITCH TELLS YOU WHICH ENGINE. The on-device half and the cloud half fail
+#    differently — on 2026-08-20 the on-device internal seam measured 3.16s and
+#    the handover 2.99s, and neither is visible in the pipeline's own log. Two
+#    pitches mean a listener hears WHICH boundary went wrong without a stopwatch,
+#    and the analyser separates them by frequency bin alone.
+#
+# Pure tones, Hanning-windowed. A tone concentrates in one narrow bin while
+# speech fricatives spread across the band, which is what makes detection
+# trivial: measured 52dB of margin at 3150Hz against real filler speech, versus
+# 5dB for the naive band-energy test that a broadband cue would force. Audible
+# on purpose -- 3150Hz sits at the ear's most sensitive point.
 CHUNK_MARKER_CLIP="${PLUGIN_ROOT_DIR}/assets/chunk-marker.wav"
+ONDEVICE_MARKER_CLIP="${PLUGIN_ROOT_DIR}/assets/ondevice-marker.wav"
 # Played when a response is nothing but code/URLs, so stripping those leaves no
 # prose to read (summarize-and-speak.sh). Silence is indistinguishable from a
 # crashed hook for someone who is listening rather than looking.
@@ -2174,9 +2195,13 @@ _play_chunk_marker() {
   # — measured 0.31s when the file tests ran first, on a call that was going to
   # return immediately anyway.
   [ "$(get_tuning CHUNK_MARKER off)" = "on" ] || return 0
-  [ -f "$CHUNK_MARKER_CLIP" ] || return 0
+  # The LOWER of the two tones (2000Hz), because this marks an ON-DEVICE
+  # boundary; the cloud side appends the 3150Hz one in _append_chunk_marker.
+  # Same length, different pitch, so a listener can tell which half of a hybrid
+  # readout a bad seam came from without timing anything.
+  [ -f "$ONDEVICE_MARKER_CLIP" ] || return 0
   command -v ffplay >/dev/null 2>&1 || return 0
-  ffplay -nodisp -autoexit -loglevel error "$CHUNK_MARKER_CLIP" >/dev/null 2>&1
+  ffplay -nodisp -autoexit -loglevel error "$ONDEVICE_MARKER_CLIP" >/dev/null 2>&1
   return 0
 }
 
