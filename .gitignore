@@ -28,3 +28,6 @@ Thumbs.db
 *.swp
 *~
 __pycache__/
+
+# Loudness envelopes from tests/measure-seams.sh (never the audio itself)
+.seam-measurements/

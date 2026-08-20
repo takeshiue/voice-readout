@@ -26,31 +26,32 @@ NOTICE_CLIP="${PLUGIN_ROOT_DIR}/assets/overflow-notice.wav"
 # spoken between the verbatim opening and the summary. Pre-rendered (Gemini 3.1
 # Flash TTS Preview, Aoede) so it's instant and consistent instead of live TTS.
 BRIDGE_CLIP="${PLUGIN_ROOT_DIR}/assets/summary-bridge.wav"
-# Diagnostic cues played at chunk boundaries when CHUNK_MARKER is on, so the
-# split points are audible (speak_cloud_chunked). Default off: a listening aid
-# for checking chunking/handoff, not part of normal readout.
+# Diagnostic cues bracketing each spoken unit when CHUNK_MARKER is on. Default
+# off: a measurement aid, not part of normal readout.
 #
-# Two tones, not one, and both 40ms rather than the 775ms clip these replaced
-# (2026-08-20). Two reasons, in order of importance:
+# FOUR tones, because a gap has two ends. Marking only where a unit STOPS leaves
+# the far end of the silence to be guessed from where speech "seems" to resume,
+# which is exactly the fuzzy judgement the measurement is trying to avoid --
+# soft onsets and breath make that edge worth hundreds of ms. With a cue at both
+# the start and the end of every unit, a gap is the arithmetic difference of two
+# unambiguous events and needs no voice-activity judgement at all.
 #
-# 1. LENGTH. The cue is appended INTO the audio being measured, so every
-#    millisecond of it lands inside the seam it is supposed to be marking. At
-#    775ms the marker was a fifth of a typical seam — measuring the ruler, not
-#    the gap. 40ms is 19x shorter and disappears into the noise of what we care
-#    about (seams run 0.7-3.5s, measured).
-# 2. PITCH TELLS YOU WHICH ENGINE. The on-device half and the cloud half fail
-#    differently — on 2026-08-20 the on-device internal seam measured 3.16s and
-#    the handover 2.99s, and neither is visible in the pipeline's own log. Two
-#    pitches mean a listener hears WHICH boundary went wrong without a stopwatch,
-#    and the analyser separates them by frequency bin alone.
+# Pitch also says WHICH engine, because the on-device and cloud halves fail
+# differently: measured 2026-08-20, an on-device internal seam of 3.16s and a
+# handover of 2.99s, neither of them visible in the pipeline's own log.
 #
-# Pure tones, Hanning-windowed. A tone concentrates in one narrow bin while
-# speech fricatives spread across the band, which is what makes detection
-# trivial: measured 52dB of margin at 3150Hz against real filler speech, versus
-# 5dB for the naive band-energy test that a broadband cue would force. Audible
-# on purpose -- 3150Hz sits at the ear's most sensitive point.
-CHUNK_MARKER_CLIP="${PLUGIN_ROOT_DIR}/assets/chunk-marker.wav"
-ONDEVICE_MARKER_CLIP="${PLUGIN_ROOT_DIR}/assets/ondevice-marker.wav"
+# Spaced 1000Hz apart on purpose. The detector reads a narrow core (+-80Hz)
+# against a ring (150-800Hz); a neighbour falling inside that ring would drag
+# the reading down. Measured separation with this spacing: 65.1dB on the correct
+# tone against at most 13.8dB on any other and 18.2dB on unmarked speech.
+# All four sit under the 12kHz Nyquist the 24kHz pipeline imposes, and are
+# deliberately audible -- being heard is useful, being long is not (40ms each,
+# against the 775ms clip these replaced).
+MARKER_DIR="${PLUGIN_ROOT_DIR}/assets/markers"
+ONDEVICE_START_CLIP="${MARKER_DIR}/ondevice-start.wav"
+ONDEVICE_END_CLIP="${MARKER_DIR}/ondevice-end.wav"
+CLOUD_START_CLIP="${MARKER_DIR}/cloud-start.wav"
+CLOUD_END_CLIP="${MARKER_DIR}/cloud-end.wav"
 # Played when a response is nothing but code/URLs, so stripping those leaves no
 # prose to read (summarize-and-speak.sh). Silence is indistinguishable from a
 # crashed hook for someone who is listening rather than looking.
@@ -1914,7 +1915,7 @@ speak_windows_sapi() {
     # Speak() is synchronous, so this point IS the end of the audio — the cue can
     # be played rather than pre-concatenated (see _play_chunk_marker). One cue
     # per call, which is what makes repeated on-device fallbacks audible.
-    _play_chunk_marker
+    _play_chunk_marker end
     # Same stamp the termux-tts-speak path writes on success. _hyb_preplay_ok()
     # requires it to decide the on-device engine is warm enough to predict, and
     # with only the Android path writing it the file never existed on Windows, so
@@ -2195,24 +2196,38 @@ _play_chunk_marker() {
   # — measured 0.31s when the file tests ran first, on a call that was going to
   # return immediately anyway.
   [ "$(get_tuning CHUNK_MARKER off)" = "on" ] || return 0
-  # The LOWER of the two tones (2000Hz), because this marks an ON-DEVICE
-  # boundary; the cloud side appends the 3150Hz one in _append_chunk_marker.
-  # Same length, different pitch, so a listener can tell which half of a hybrid
-  # readout a bad seam came from without timing anything.
-  [ -f "$ONDEVICE_MARKER_CLIP" ] || return 0
-  command -v ffplay >/dev/null 2>&1 || return 0
-  ffplay -nodisp -autoexit -loglevel error "$ONDEVICE_MARKER_CLIP" >/dev/null 2>&1
+  # $1 is "start" or "end". The on-device cues are PLAYED rather than
+  # concatenated because there is no file to concatenate onto: the local engine
+  # speaks straight to the speaker.
+  local clip
+  case "${1:-end}" in
+    start) clip="$ONDEVICE_START_CLIP" ;;
+    *)     clip="$ONDEVICE_END_CLIP" ;;
+  esac
+  [ -f "$clip" ] || return 0
+  # Same player as the readout itself. Using a different one would put the
+  # measurement cue on a different audio path from the audio being measured,
+  # which is the sort of confound that makes a number untrustworthy.
+  if command -v termux-media-player >/dev/null 2>&1; then
+    termux-media-player play "$clip" >/dev/null 2>&1
+  elif command -v ffplay >/dev/null 2>&1; then
+    ffplay -nodisp -autoexit -loglevel error "$clip" >/dev/null 2>&1
+  fi
   return 0
 }
 
 _append_chunk_marker() {
   local f="$1" ext tmp
   [ "$(get_tuning CHUNK_MARKER off)" = "on" ] || return 0
-  [ -f "$CHUNK_MARKER_CLIP" ] || return 0
+  [ -f "$CLOUD_START_CLIP" ] && [ -f "$CLOUD_END_CLIP" ] || return 0
   command -v ffmpeg >/dev/null 2>&1 || return 0
   ext="${f##*.}"; tmp="${f%.*}-marked.${ext}"
-  if ffmpeg -y -i "$f" -i "$CHUNK_MARKER_CLIP" -filter_complex \
-       '[0:a]aresample=24000,aformat=sample_fmts=s16:channel_layouts=mono[a0];[1:a]aresample=24000,aformat=sample_fmts=s16:channel_layouts=mono[a1];[a0][a1]concat=n=2:v=0:a=1' \
+  # start + audio + end, in one pass. Three inputs rather than two so the file
+  # is rewritten once; concatenating twice would decode and re-encode the chunk
+  # a second time, and this runs on the generation path where a cloud chunk is
+  # already the slowest thing in the readout.
+  if ffmpeg -y -i "$CLOUD_START_CLIP" -i "$f" -i "$CLOUD_END_CLIP" -filter_complex \
+       '[0:a]aresample=24000,aformat=sample_fmts=s16:channel_layouts=mono[a0];[1:a]aresample=24000,aformat=sample_fmts=s16:channel_layouts=mono[a1];[2:a]aresample=24000,aformat=sample_fmts=s16:channel_layouts=mono[a2];[a0][a1][a2]concat=n=3:v=0:a=1' \
        "$tmp" -loglevel error 2>/dev/null && [ -s "$tmp" ]; then
     mv -f "$tmp" "$f"
   else
@@ -3556,8 +3571,14 @@ speak() {
             # safe to kill" — which would recreate the self-inflicted
             # collision this lock exists to prevent.
             printf '%s:%s' "$$" "$(( $(date +%s) + ctimeout + retry_wait_max + 10 ))" > "$ONDEVICE_LOCK_FILE" 2>/dev/null
+            # Brackets the unit, not the whole readout: the gaps BETWEEN
+            # consecutive on-device chunks are seams in their own right, and one
+            # of them measured 3.16s on 2026-08-20 with nothing in the log to
+            # show for it. No-ops (a single get_tuning) unless CHUNK_MARKER is on.
+            _play_chunk_marker start
             timeout "$ctimeout" termux-tts-speak "${tts_args[@]}" "$chunk" </dev/null
             rc=$?
+            [ "$rc" -eq 0 ] && _play_chunk_marker end
             [ "$rc" -eq 0 ] && break
             [ "$attempt" -eq "$chunk_retries" ] && break
 
